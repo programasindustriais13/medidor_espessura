@@ -4,17 +4,28 @@ class ProfileLogic:
     sem dependência da posição X (Zona de Borda ignorada).
     """
     
-    # Defaults
+    # Defaults estáticos de segurança
     ESPESSURA_CENTRO = 10.0
     ESPESSURA_BORDA = 2.0
     TOLERANCIA_POSITIVA = 0.5
-    
+
     @classmethod
     def get_specs(cls, esp_borda=None, centro=None, tol=None):
-        E_Centro = float(centro) if centro is not None else cls.ESPESSURA_CENTRO
-        E_Borda = float(esp_borda) if esp_borda is not None else cls.ESPESSURA_BORDA
-        t = float(tol) if tol is not None else cls.TOLERANCIA_POSITIVA
-        
+        try:
+            from .models import SystemConfiguration
+            config = SystemConfiguration.get_config()
+            def_centro = config.espessura_centro_nominal
+            def_borda = config.espessura_borda_nominal
+            def_tol = config.tolerancia_positiva
+        except Exception:
+            def_centro = cls.ESPESSURA_CENTRO
+            def_borda = cls.ESPESSURA_BORDA
+            def_tol = cls.TOLERANCIA_POSITIVA
+
+        E_Centro = float(centro) if centro is not None and str(centro).strip() != "" else def_centro
+        E_Borda = float(esp_borda) if esp_borda is not None and str(esp_borda).strip() != "" else def_borda
+        t = float(tol) if tol is not None and str(tol).strip() != "" else def_tol
+
         return {
             'borda': {'alvo': E_Borda, 'min': E_Borda, 'max': E_Borda + t},
             'centro': {'alvo': E_Centro, 'min': E_Centro, 'max': E_Centro + t}

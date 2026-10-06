@@ -1,0 +1,241 @@
+{% extends "admin/base_site.html" %}
+{% load i18n static %}
+
+{% block extrastyle %}
+{{ block.super }}
+<style>
+    .diag-container {
+        max-width: 1000px;
+        margin: 20px 0;
+        font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    }
+    .diag-card {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 24px;
+        margin-bottom: 24px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+    .diag-card h3 {
+        margin-top: 0;
+        margin-bottom: 16px;
+        color: #1e293b;
+        font-size: 1.15rem;
+        border-bottom: 2px solid #f1f5f9;
+        padding-bottom: 8px;
+    }
+    .form-group {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 16px;
+    }
+    .form-control {
+        flex: 1;
+        max-width: 400px;
+        padding: 10px 14px;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        font-size: 14px;
+    }
+    .btn-diag {
+        background-color: #0284c7;
+        color: #ffffff;
+        padding: 10px 20px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-weight: 600;
+        transition: background-color 0.15s ease;
+    }
+    .btn-diag:hover {
+        background-color: #0369a1;
+    }
+    .quick-links {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+        font-size: 13px;
+    }
+    .quick-btn {
+        background: #f1f5f9;
+        border: 1px solid #cbd5e1;
+        padding: 4px 10px;
+        border-radius: 4px;
+        text-decoration: none;
+        color: #334155;
+        font-weight: 500;
+    }
+    .quick-btn:hover {
+        background: #e2e8f0;
+    }
+    .status-badge {
+        display: inline-block;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+    }
+    .status-OK {
+        background-color: #dcfce7;
+        color: #15803d;
+        border: 1px solid #86efac;
+    }
+    .status-STALE {
+        background-color: #fef9c3;
+        color: #a16207;
+        border: 1px solid #fde047;
+    }
+    .status-NO_READINGS {
+        background-color: #e0f2fe;
+        color: #0369a1;
+        border: 1px solid #7dd3fc;
+    }
+    .status-NOT_FOUND {
+        background-color: #fee2e2;
+        color: #b91c1c;
+        border: 1px solid #fca5a5;
+    }
+    .status-SCADA_OFFLINE {
+        background-color: #f1f5f9;
+        color: #475569;
+        border: 1px solid #cbd5e1;
+    }
+    .diag-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 16px;
+    }
+    .diag-table th, .diag-table td {
+        padding: 12px 14px;
+        text-align: left;
+        border-bottom: 1px solid #f1f5f9;
+    }
+    .diag-table th {
+        background-color: #f8fafc;
+        color: #475569;
+        font-weight: 600;
+        width: 25%;
+    }
+    .diag-table td {
+        color: #0f172a;
+    }
+    .code-val {
+        font-family: Consolas, 'Courier New', monospace;
+        background: #f8fafc;
+        padding: 2px 6px;
+        border-radius: 4px;
+        border: 1px solid #e2e8f0;
+    }
+    .alert-banner {
+        padding: 12px 16px;
+        border-radius: 6px;
+        margin-bottom: 16px;
+        font-size: 14px;
+    }
+    .alert-info {
+        background: #eff6ff;
+        border: 1px solid #bfdbfe;
+        color: #1e40af;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="diag-container">
+    <div class="alert-banner alert-info">
+        🛡️ <strong>Modo Somente-Leitura de Alta Segurança:</strong> Esta ferramenta executa apenas consultas diagnósticas (SELECT) no banco do Scada-LTS. Nenhuma operação de escrita, alteração de parâmetros ou envio de comandos aos CLPs é realizada.
+    </div>
+
+    <div class="diag-card">
+        <h3>Diagnóstico de Data Point (Tag / XID)</h3>
+        <form method="get" action="">
+            <div class="form-group">
+                <input type="text" name="xid" value="{{ xid|default:'' }}" placeholder="Ex: DP_887366 ou DP_747174" class="form-control" autofocus required>
+                <button type="submit" class="btn-diag">Verificar Tag</button>
+            </div>
+        </form>
+        <div class="quick-links">
+            <span>Testar Tags do Sistema:</span>
+            <a href="?xid={{ config.xid_gatilho }}" class="quick-btn">Gatilho ({{ config.xid_gatilho }})</a>
+            <a href="?xid={{ config.xid_medicao }}" class="quick-btn">Medição ({{ config.xid_medicao }})</a>
+        </div>
+    </div>
+
+    {% if diag %}
+    <div class="diag-card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+            <h3 style="margin: 0; border: none; padding: 0;">Resultado do Diagnóstico: <span class="code-val">{{ diag.xid }}</span></h3>
+            <span class="status-badge status-{{ diag.status }}">{{ diag.status }}</span>
+        </div>
+
+        <p><strong>Diagnóstico Operacional:</strong> {{ diag.mensagem }}</p>
+
+        <table class="diag-table">
+            <tr>
+                <th>XID Solicitado</th>
+                <td><span class="code-val">{{ diag.xid }}</span></td>
+            </tr>
+            <tr>
+                <th>Data Point ID (Interno)</th>
+                <td>{% if diag.data_point_id %}<span class="code-val">{{ diag.data_point_id }}</span>{% else %}<em>Não localizado</em>{% endif %}</td>
+            </tr>
+            <tr>
+                <th>Nome Cadastrado</th>
+                <td>{{ diag.point_name|default:"<em>Sem nome</em>" }}</td>
+            </tr>
+            <tr>
+                <th>Tipo de Dado (dataType)</th>
+                <td>
+                    {% if diag.data_type == 1 %}1 - Binary (Booleano)
+                    {% elif diag.data_type == 2 %}2 - Multistate (Enum / Inteiro)
+                    {% elif diag.data_type == 3 %}3 - Numeric (Float / Precisão Dupla)
+                    {% elif diag.data_type == 4 %}4 - Alphanumeric (Texto / JSON)
+                    {% else %}<em>{{ diag.data_type|default:"Não identificado" }}</em>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <th>Último Valor Registrado</th>
+                <td>
+                    {% if diag.str_valor %}
+                        <span class="code-val">{{ diag.str_valor }}</span>
+                    {% else %}
+                        <em>Sem leitura</em>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <th>Data / Hora da Amostra</th>
+                <td>
+                    {% if diag.timestamp %}
+                        {{ diag.timestamp|date:"d/m/Y H:i:s" }} ({{ diag.timestamp|time:"H:i:s.u" }})
+                    {% else %}
+                        <em>--</em>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <th>Idade da Amostra</th>
+                <td>
+                    {% if diag.idade_segundos is not None %}
+                        <strong>{{ diag.idade_segundos }} segundos</strong>
+                        {% if diag.idade_segundos > config.limite_stale_segundos %}
+                            <span style="color: #b45309;">(Acima do limite de {{ config.limite_stale_segundos }}s)</span>
+                        {% endif %}
+                    {% else %}
+                        <em>--</em>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <th>Origem Ativa no Sistema</th>
+                <td>{{ config.get_data_source_display }}</td>
+            </tr>
+        </table>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

@@ -2,7 +2,7 @@ import csv
 from django.shortcuts import render
 from django.http import JsonResponse, HttpResponse
 from django.utils import timezone
-from .models import LeituraScada
+from .models import LeituraScada, SystemConfiguration
 from django.db.models import Max
 from .profile_logic import ProfileLogic
 
@@ -10,7 +10,8 @@ def dashboard(request):
     """
     Renderiza a interface principal do medidor.
     """
-    return render(request, 'core/dashboard.html')
+    config = SystemConfiguration.get_config()
+    return render(request, 'core/dashboard.html', {'config': config})
 
 
 

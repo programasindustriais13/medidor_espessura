@@ -10,22 +10,30 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
+import os
 from pathlib import Path
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Carrega variáveis do arquivo .env
+load_dotenv(BASE_DIR / ".env")
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-&yivy06du01_qs944zlhiagv$k2d+$soisy!suba&*m3p+y0mq"
+SECRET_KEY = os.environ.get(
+    "DJANGO_SECRET_KEY",
+    "django-insecure-&yivy06du01_qs944zlhiagv$k2d+$soisy!suba&*m3p+y0mq"
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get("DJANGO_DEBUG", "True").lower() in ("true", "1", "yes")
 
-ALLOWED_HOSTS = []
+_allowed = os.environ.get("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost")
+ALLOWED_HOSTS = [h.strip() for h in _allowed.split(",") if h.strip()]
 
 
 # Application definition
@@ -78,8 +86,23 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "db.sqlite3",
-    }
+    },
+    "scada": {
+        "ENGINE": os.environ.get("SCADA_DB_ENGINE", "django.db.backends.mysql"),
+        "NAME": os.environ.get("SCADA_DB_NAME", "scadalts"),
+        "USER": os.environ.get("SCADA_DB_USER", "scada_monitor_ro"),
+        "PASSWORD": os.environ.get("SCADA_DB_PASSWORD", ""),
+        "HOST": os.environ.get("SCADA_DB_HOST", "127.0.0.1"),
+        "PORT": os.environ.get("SCADA_DB_PORT", "3306"),
+        "OPTIONS": {
+            "charset": "utf8mb4",
+            "connect_timeout": int(os.environ.get("SCADA_DB_CONNECT_TIMEOUT", "5")),
+        },
+    },
 }
+
+# Roteador de Banco de Dados Multi-DB (Segurança estrita de somente-leitura e bloqueio de migrações)
+DATABASE_ROUTERS = ["core.routers.ScadaRouter"]
 
 
 # Password validation
@@ -104,9 +127,9 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/4.2/topics/i18n/
 
-LANGUAGE_CODE = "en-us"
+LANGUAGE_CODE = "pt-br"
 
-TIME_ZONE = "UTC"
+TIME_ZONE = "America/Sao_Paulo"
 
 USE_I18N = True
 
@@ -122,3 +145,13 @@ STATIC_URL = "static/"
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# ── Configurações de Integração Scada-LTS ────────────────────────────────────
+SCADA_DATA_SOURCE = os.environ.get("SCADA_DATA_SOURCE", "rest_api").lower()
+SCADA_REST_BASE_URL = os.environ.get("SCADA_REST_BASE_URL", "http://192.168.0.202:8080/Scada-LTS")
+SCADA_REST_USERNAME = os.environ.get("SCADA_REST_USERNAME", "teste")
+SCADA_REST_PASSWORD = os.environ.get("SCADA_REST_PASSWORD", "teste1")
+SCADA_XID_GATILHO = os.environ.get("SCADA_XID_GATILHO", "DP_887366")
+SCADA_XID_MEDICAO = os.environ.get("SCADA_XID_MEDICAO", "DP_747174")
+SCADA_AUTO_WORKER = os.environ.get("SCADA_AUTO_WORKER", "False").lower() in ("true", "1", "yes")
+

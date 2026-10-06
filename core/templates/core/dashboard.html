@@ -20,15 +20,15 @@
     <div class="metrics-row">
         <div class="card metric-card">
             <h3>Espessura Borda (mm)</h3>
-            <input type="number" id="logic-esp-borda" value="2.0" step="0.1" class="input-control">
+            <input type="number" id="logic-esp-borda" value="{{ config.espessura_borda_nominal|stringformat:'.1f'|default:'2.0' }}" step="0.1" class="input-control">
         </div>
         <div class="card metric-card">
             <h3>Espessura Centro (mm)</h3>
-            <input type="number" id="logic-centro" value="10.0" step="0.1" class="input-control">
+            <input type="number" id="logic-centro" value="{{ config.espessura_centro_nominal|stringformat:'.1f'|default:'10.0' }}" step="0.1" class="input-control">
         </div>
         <div class="card metric-card">
             <h3>Tolerância (+) (mm)</h3>
-            <input type="number" id="logic-tol" value="0.5" step="0.05" class="input-control">
+            <input type="number" id="logic-tol" value="{{ config.tolerancia_positiva|stringformat:'.2f'|default:'0.5' }}" step="0.05" class="input-control">
         </div>
         <div class="card metric-card">
             <h3>Status do Ciclo</h3>
