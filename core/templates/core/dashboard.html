@@ -1,0 +1,53 @@
+{% extends 'core/base.html' %}
+{% load static %}
+
+{% block content %}
+<div class="dashboard-grid">
+    <!-- Header e Controles -->
+    <div class="page-header">
+        <div>
+            <h2>Perfil de Espessura</h2>
+            <p class="subtitle" id="scan-status-text">Aguardando início de ciclo...</p>
+        </div>
+        <div class="actions">
+            <a href="{% url 'exportar_csv' %}" class="btn btn-secondary">
+                <span class="icon">⬇️</span> Histórico CSV
+            </a>
+        </div>
+    </div>
+
+    <!-- Configurações de Lógica (ProfileLogic) -->
+    <div class="metrics-row">
+        <div class="card metric-card">
+            <h3>Espessura Borda (mm)</h3>
+            <input type="number" id="logic-esp-borda" value="2.0" step="0.1" class="input-control">
+        </div>
+        <div class="card metric-card">
+            <h3>Espessura Centro (mm)</h3>
+            <input type="number" id="logic-centro" value="10.0" step="0.1" class="input-control">
+        </div>
+        <div class="card metric-card">
+            <h3>Tolerância (+) (mm)</h3>
+            <input type="number" id="logic-tol" value="0.5" step="0.05" class="input-control">
+        </div>
+        <div class="card metric-card">
+            <h3>Status do Ciclo</h3>
+            <div class="value" id="current-scan-id">--</div>
+        </div>
+    </div>
+
+    <!-- Gráfico de Perfil -->
+    <div class="card chart-card">
+        <div class="chart-header">
+            <h3>Perfil Transversal do Material</h3>
+        </div>
+        <div class="chart-container">
+            <canvas id="profileChart"></canvas>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{% static 'js/dashboard.js' %}"></script>
+{% endblock %}
