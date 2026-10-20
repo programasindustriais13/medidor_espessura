@@ -482,3 +482,313 @@ class SystemConfigurationAdminValidationTestCase(TestCase):
         c2.save()
         self.assertEqual(c2.pk, 1)
         self.assertEqual(SystemConfiguration.objects.count(), 1)
+
+
+class ControlledImplementationScenariosTestCase(TestCase):
+    """
+    Testes obrigatórios cobrindo os cenários industriais A a H:
+    A - Ciclo normal (0 -> 1 -> 1 -> 1 -> 0)
+    B - Variações de Y com X constante
+    C - Deduplicação de registros gêmeos no Scada
+    D - Encerramento com medições pendentes (drain)
+    E - Falha de comunicação e resiliência
+    F - Reinício do coletor (com gatilho 0 e com gatilho 1)
+    G - Integração frontend (Chart.js / API)
+    H - Django Admin (Point Values removido, demais mantidos)
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.config = SystemConfiguration.get_config()
+        self.config.data_source = "mysql"
+        self.config.delta_x_minimo = 0.1
+        self.config.save()
+        self.service = ScadaAcquisitionService(override_source="mysql")
+
+    # ── Cenário A: Ciclo Normal ────────────────────────────────────────────
+    @patch.object(ScadaAcquisitionService, "get_trigger_info")
+    @patch.object(ScadaAcquisitionService, "_collect_measurements_mysql")
+    def test_cenario_a_ciclo_normal(self, mock_collect, mock_trigger):
+        """
+        Sequência 0 -> 1 -> 1 -> 1 -> 0.
+        Garante início de ciclo na borda de subida, permanência no nível alto
+        e encerramento único na borda de descida.
+        """
+        t0 = 1700000000000
+        # 1. Gatilho em repouso (0)
+        mock_trigger.return_value = {"active": False, "ts": t0, "datetime": timezone.now()}
+        res1 = self.service.process_cycle()
+        self.assertEqual(res1["status"], "IDLE")
+        self.assertFalse(self.service.is_scanning)
+
+        # 2. Borda de subida (1)
+        t1 = t0 + 1000
+        mock_trigger.return_value = {"active": True, "ts": t1, "datetime": timezone.now()}
+        mock_collect.return_value = 2
+        res2 = self.service.process_cycle()
+        self.assertEqual(res2["status"], "SCANNING")
+        self.assertTrue(self.service.is_scanning)
+        scan_id = self.service.current_scan_id
+        self.assertIsNotNone(scan_id)
+
+        # 3. Nível alto contínuo (1)
+        t2 = t1 + 200
+        mock_trigger.return_value = {"active": True, "ts": t2, "datetime": timezone.now()}
+        mock_collect.return_value = 3
+        res3 = self.service.process_cycle()
+        self.assertEqual(res3["status"], "SCANNING")
+        self.assertEqual(self.service.current_scan_id, scan_id)
+
+        # 4. Nível alto contínuo (1)
+        t3 = t2 + 200
+        mock_trigger.return_value = {"active": True, "ts": t3, "datetime": timezone.now()}
+        mock_collect.return_value = 1
+        res4 = self.service.process_cycle()
+        self.assertEqual(res4["status"], "SCANNING")
+        self.assertEqual(self.service.current_scan_id, scan_id)
+
+        # 5. Borda de descida (0)
+        t4 = t3 + 200
+        mock_trigger.return_value = {"active": False, "ts": t4, "datetime": timezone.now()}
+        mock_collect.return_value = 0
+        res5 = self.service.process_cycle()
+        self.assertEqual(res5["status"], "IDLE")
+        self.assertFalse(self.service.is_scanning)
+        self.assertIsNone(self.service.current_scan_id)
+        self.assertEqual(self.service.last_completed_scan_id, scan_id)
+
+    # ── Cenário B: Variações de Y com X constante ───────────────────────────
+    def test_cenario_b_variacao_y_com_x_constante(self):
+        """
+        Exemplo real: [{"x":0,"y":1.91}], [{"x":0,"y":5.30}], [{"x":0,"y":8.24}].
+        Todas as 3 medições com X=0 devem ser preservadas sem descarte pelo filtro espacial.
+        """
+        self.service.is_scanning = True
+        self.service.current_scan_id = "SCAN_TEST_CENARIO_B"
+
+        dt_base = timezone.now()
+        samples = [
+            {"value": '[{"x":0,"y":1.91}]', "ts": 1700000001000, "datetime": dt_base},
+            {"value": '[{"x":0,"y":5.30}]', "ts": 1700000001200, "datetime": dt_base},
+            {"value": '[{"x":0,"y":8.24}]', "ts": 1700000001400, "datetime": dt_base},
+        ]
+
+        with patch.object(self.service.repo, "get_incremental_readings") as mock_inc:
+            mock_inc.return_value = (samples, 103, 1700000001400)
+            saved = self.service._collect_measurements_mysql(self.config)
+
+            self.assertEqual(saved, 3)
+            leituras = list(LeituraScada.objects.filter(scan_id="SCAN_TEST_CENARIO_B").order_by("id"))
+            self.assertEqual(len(leituras), 3)
+
+            self.assertEqual(leituras[0].eixo_x, 0.0)
+            self.assertEqual(leituras[0].eixo_y, 1.91)
+
+            self.assertEqual(leituras[1].eixo_x, 0.0)
+            self.assertEqual(leituras[1].eixo_y, 5.30)
+
+            self.assertEqual(leituras[2].eixo_x, 0.0)
+            self.assertEqual(leituras[2].eixo_y, 8.24)
+
+    # ── Cenário C: Duplicação no Scada ─────────────────────────────────────
+    def test_cenario_c_duplicacao_no_scada(self):
+        """
+        Dois registros no Scada possuem mesmo timestamp e mesmo conteúdo (amostras gêmeas).
+        O coletor deve descartar a réplica gêmea mas aceitar uma terceira amostra válida distinta.
+        """
+        self.service.is_scanning = True
+        self.service.current_scan_id = "SCAN_TEST_CENARIO_C"
+
+        dt_base = timezone.now()
+        # Amostra 1 e Amostra 2 são idênticas no mesmo ts (gêmeas do Scada)
+        # Amostra 3 é um evento posterior legítimo
+        samples = [
+            {"value": '[{"x":0,"y":1.32}]', "ts": 1700000001000, "datetime": dt_base},
+            {"value": '[{"x":0,"y":1.32}]', "ts": 1700000001000, "datetime": dt_base},  # Gêmeo
+            {"value": '[{"x":0,"y":5.37}]', "ts": 1700000001200, "datetime": dt_base},  # Novo
+        ]
+
+        with patch.object(self.service.repo, "get_incremental_readings") as mock_inc:
+            mock_inc.return_value = (samples, 103, 1700000001200)
+            saved = self.service._collect_measurements_mysql(self.config)
+
+            # Apenas 2 pontos devem ser salvos (o gêmeo é descartado)
+            self.assertEqual(saved, 2)
+            leituras = LeituraScada.objects.filter(scan_id="SCAN_TEST_CENARIO_C")
+            self.assertEqual(leituras.count(), 2)
+            valores_y = [l.eixo_y for l in leituras.order_by("id")]
+            self.assertEqual(valores_y, [1.32, 5.37])
+
+    # ── Cenário D: Encerramento com medições pendentes ──────────────────────
+    def test_cenario_d_encerramento_com_pendencias(self):
+        """
+        Ao detectar borda de descida (0), o serviço executa drain residual até o
+        timestamp do gatilho, preservando os últimos pontos do ciclo antes de fechar o scan.
+        """
+        self.service._first_run = False
+        self.service.is_scanning = True
+        self.service.current_scan_id = "SCAN_TEST_CENARIO_D"
+
+        t_end = 1700000005000
+        dt_end = timezone.now()
+
+        # Simula medição residual no momento do retorno a 0
+        residual_samples = [
+            {"value": '[{"x":24.6,"y":0}]', "ts": t_end, "datetime": dt_end},
+        ]
+
+        with patch.object(self.service, "read_trigger") as mock_trig:
+            # Gatilho desce para 0
+            mock_trig.return_value = False
+            self.service._last_trigger_info = {"active": False, "ts": t_end, "datetime": dt_end}
+
+            with patch.object(self.service.repo, "get_incremental_readings") as mock_inc:
+                mock_inc.return_value = (residual_samples, 201, t_end)
+                res = self.service.process_cycle()
+
+                # Verifica que o ciclo foi encerrado
+                self.assertEqual(res["status"], "IDLE")
+                self.assertFalse(self.service.is_scanning)
+
+                # Verifica que a medição residual foi salva no ciclo que acabou de fechar
+                leituras = LeituraScada.objects.filter(scan_id="SCAN_TEST_CENARIO_D")
+                self.assertEqual(leituras.count(), 1)
+                self.assertEqual(leituras.first().eixo_x, 24.6)
+                self.assertEqual(leituras.first().eixo_y, 0.0)
+
+    # ── Cenário E: Falha de comunicação e resiliência ───────────────────────
+    def test_cenario_e_falha_comunicacao(self):
+        """
+        Quando o MySQL/Scada fica inacessível (OperationalError), o serviço
+        reporta NO_COMMUNICATION sem inventar medições e sem corromper o histórico.
+        Ao restabelecer, retorna a operar normalmente.
+        """
+        # Cria histórico prévio
+        LeituraScada.objects.create(
+            scan_id="SCAN_HISTORICO_PREVIO",
+            xid="DP_747174",
+            eixo_x=10.0,
+            eixo_y=2.0,
+            data_leitura=timezone.now(),
+        )
+
+        with patch.object(self.service, "read_trigger") as mock_trig:
+            # 1. Falha de conexão
+            mock_trig.return_value = None
+            res_fail = self.service.process_cycle()
+            self.assertEqual(res_fail["status"], "NO_COMMUNICATION")
+            self.assertEqual(res_fail["saved"], 0)
+
+            # Histórico deve permanecer intacto
+            self.assertEqual(LeituraScada.objects.count(), 1)
+
+            # 2. Restabelecimento da conexão (gatilho em 0)
+            mock_trig.return_value = False
+            self.service._last_trigger_info = {"active": False, "ts": 1700000000000, "datetime": timezone.now()}
+            res_ok = self.service.process_cycle()
+            self.assertEqual(res_ok["status"], "IDLE")
+
+    # ── Cenário F: Reinício do coletor ──────────────────────────────────────
+    def test_cenario_f_reinicio_coletor(self):
+        """
+        F1: Reinício com gatilho em 0 -> Inicia em repouso (IDLE), aguardando subida.
+        F2: Reinício com gatilho em 1 -> Assume explicitamente ciclo em andamento.
+        """
+        # Caso F1: Reinício com gatilho em 0
+        service_f1 = ScadaAcquisitionService(override_source="mysql")
+        with patch.object(service_f1, "read_trigger") as mock_trig1:
+            mock_trig1.return_value = False
+            service_f1._last_trigger_info = {"active": False, "ts": 1700000000000, "datetime": timezone.now()}
+            res_f1 = service_f1.process_cycle()
+            self.assertEqual(res_f1["status"], "IDLE")
+            self.assertFalse(service_f1.is_scanning)
+            self.assertIsNone(service_f1.current_scan_id)
+
+        # Caso F2: Reinício com gatilho em 1
+        service_f2 = ScadaAcquisitionService(override_source="mysql")
+        with patch.object(service_f2, "read_trigger") as mock_trig2:
+            mock_trig2.return_value = True
+            service_f2._last_trigger_info = {"active": True, "ts": 1700000010000, "datetime": timezone.now()}
+            with patch.object(service_f2, "_collect_measurements_mysql") as mock_col2:
+                mock_col2.return_value = 0
+                res_f2 = service_f2.process_cycle()
+                self.assertEqual(res_f2["status"], "SCANNING")
+                self.assertTrue(service_f2.is_scanning)
+                self.assertIsNotNone(service_f2.current_scan_id)
+                self.assertEqual(service_f2.last_reading_ts, 1700000010000)
+                self.assertEqual(service_f2.last_reading_id, 0)
+
+    # ── Cenário G: Integração Frontend ─────────────────────────────────────
+    def test_cenario_g_integracao_frontend(self):
+        """
+        Verifica que a API entrega os campos esperados pelo Chart.js:
+        scan_id, collector_status, is_live_cycle, count e coordenadas estruturadas.
+        """
+        now = timezone.now()
+        LeituraScada.objects.create(
+            scan_id="SCAN_FRONTEND_01",
+            xid="DP_747174",
+            eixo_x=0.0,
+            eixo_y=1.91,
+            data_leitura=now,
+        )
+        LeituraScada.objects.create(
+            scan_id="SCAN_FRONTEND_01",
+            xid="DP_747174",
+            eixo_x=0.0,
+            eixo_y=5.30,
+            data_leitura=now,
+        )
+
+        resp = self.client.get("/api/dados/?scan_id=SCAN_FRONTEND_01")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        self.assertEqual(data["scan_id"], "SCAN_FRONTEND_01")
+        self.assertEqual(data["count"], 2)
+        self.assertIn("collector_status", data)
+        self.assertIn("is_live_cycle", data)
+
+        ponto = data["data"][0]
+        self.assertEqual(ponto["x"], 0.0)
+        self.assertEqual(ponto["y"], 1.91)
+        self.assertIn("target", ponto)
+        self.assertIn("min", ponto)
+        self.assertIn("max", ponto)
+        self.assertIn("is_ok", ponto)
+        self.assertIn("zona", ponto)
+
+    # ── Cenário H: Django Admin ────────────────────────────────────────────
+    def test_cenario_h_admin(self):
+        """
+        Confirmar que Point Values (Scada-LTS) não está mais registrado no Admin,
+        sua rota antiga retorna 404, e os demais modelos e rotas permanecem operacionais.
+        """
+        from django.contrib import admin as django_admin
+        from core.models import ScadaPointValue, ScadaDataPoint, LeituraScada, SystemConfiguration
+
+        # 1. ScadaPointValue não está registrado no admin
+        self.assertFalse(django_admin.site.is_registered(ScadaPointValue))
+
+        # 2. Demais modelos continuam registrados
+        self.assertTrue(django_admin.site.is_registered(ScadaDataPoint))
+        self.assertTrue(django_admin.site.is_registered(LeituraScada))
+        self.assertTrue(django_admin.site.is_registered(SystemConfiguration))
+
+        # 3. Rota antiga de Point Values retorna 404
+        admin_user = User.objects.create_superuser("super_h", "h@test.com", "pass123")
+        self.client.force_login(admin_user)
+        resp_pv = self.client.get("/admin/core/scadapointvalue/")
+        self.assertEqual(resp_pv.status_code, 404)
+
+        # 4. Rotas ativas no banco local funcionam normalmente (200 OK)
+        resp_leitura = self.client.get("/admin/core/leiturascada/")
+        self.assertEqual(resp_leitura.status_code, 200)
+
+        resp_config = self.client.get("/admin/core/systemconfiguration/")
+        self.assertEqual(resp_config.status_code, 200)
+
+        # 5. Rota personalizada de diagnóstico funciona normalmente (200 OK)
+        resp_diag = self.client.get("/admin/scada-diagnostico/")
+        self.assertEqual(resp_diag.status_code, 200)
+

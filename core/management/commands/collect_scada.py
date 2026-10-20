@@ -75,19 +75,28 @@ class Command(BaseCommand):
             status = res.get("status")
             scan = res.get("scan_id")
             saved = res.get("saved", 0)
+            total = res.get("total_in_scan", 0)
 
             if status != last_status or scan != last_scan:
                 if status == "SCANNING":
                     self.stdout.write(self.style.SUCCESS(f"\n>>> [CICLO INICIADO] {scan} <<<"))
                 elif status == "IDLE" and last_status == "SCANNING":
-                    self.stdout.write(self.style.NOTICE(f"\n>>> [CICLO FINALIZADO] {last_scan} <<<"))
+                    self.stdout.write(self.style.NOTICE(f"\n>>> [CICLO FINALIZADO] {last_scan} (Total: {total} pontos) <<<"))
                 elif status == "NO_COMMUNICATION":
-                    self.stdout.write(self.style.WARNING(f"\r[ALERTA] Sem comunicação com o Scada-LTS ({config.data_source})..."), ending="")
+                    self.stdout.write(self.style.WARNING(f"\n[ALERTA] Sem comunicação com o Scada-LTS ({config.data_source}). Aguardando conexão..."))
+                elif status == "IDLE" and last_status == "NO_COMMUNICATION":
+                    self.stdout.write(self.style.SUCCESS(f"\n[OK] Comunicação restabelecida com o Scada-LTS. Aguardando novo ciclo..."))
+                elif status == "PAUSED":
+                    self.stdout.write(self.style.NOTICE(f"\n[PAUSADO] Aquisição pausada na configuração do sistema."))
+
                 last_status = status
                 last_scan = scan
 
             if status == "SCANNING" and saved > 0:
-                self.stdout.write(f"\r[{scan}] Gravados +{saved} ponto(s) | Posição X={service.last_valid_x:.2f}mm", ending="")
+                self.stdout.write(
+                    f"\r[{scan}] Gravados +{saved} ponto(s) (Total: {total}) | X={service.last_valid_x:.2f}mm | Y={service.last_valid_y:.3f}mm",
+                    ending="",
+                )
                 sys.stdout.flush()
 
         try:

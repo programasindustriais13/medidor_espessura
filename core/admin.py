@@ -9,7 +9,6 @@ from .models import (
     LeituraScada,
     SystemConfiguration,
     ScadaDataPoint,
-    ScadaPointValue,
 )
 from .scada_repository import ScadaRepository
 
@@ -157,38 +156,6 @@ class ScadaDataPointAdmin(admin.ModelAdmin):
                 request,
                 f"Banco MySQL do Scada-LTS inacessível no momento ({oe}). "
                 "Verifique a conectividade de rede com o servidor Scada."
-            )
-            return render(request, "admin/core/scada_offline.html", {"error": str(oe)})
-
-
-@admin.register(ScadaPointValue)
-class ScadaPointValueAdmin(admin.ModelAdmin):
-    """
-    Visualização somente-leitura do histórico bruto no Scada-LTS.
-    Bloqueio absoluto de escrita e consulta com limite para preservar desempenho.
-    """
-    list_display = ("id", "data_point_id", "data_type", "point_value", "ts")
-    search_fields = ("data_point_id",)
-    list_per_page = 50
-
-    def has_add_permission(self, request):
-        return False
-
-    def has_change_permission(self, request, obj=None):
-        return False
-
-    def has_delete_permission(self, request, obj=None):
-        return False
-
-    def changelist_view(self, request, extra_context=None):
-        try:
-            return super().changelist_view(request, extra_context)
-        except OperationalError as oe:
-            logger.warning(f"[ADMIN] Scada MySQL offline ao abrir ScadaPointValue: {oe}")
-            from django.contrib import messages
-            messages.error(
-                request,
-                f"Banco MySQL do Scada-LTS inacessível no momento ({oe})."
             )
             return render(request, "admin/core/scada_offline.html", {"error": str(oe)})
 

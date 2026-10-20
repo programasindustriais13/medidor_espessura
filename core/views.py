@@ -5,6 +5,7 @@ from django.utils import timezone
 from .models import LeituraScada, SystemConfiguration
 from django.db.models import Max
 from .profile_logic import ProfileLogic
+from .scada_service import get_collector_status
 
 def dashboard(request):
     """
@@ -30,29 +31,47 @@ def api_dados_scada(request):
     """
     Retorna os dados enriquecidos com a lógica de perfil.
     Parâmetro opcional GET 'scan_id'.
+    Fornece metadados operacionais de status do coletor em tempo real.
     """
-    scan_id = request.GET.get('scan_id')
+    req_scan_id = request.GET.get('scan_id')
 
     # Parâmetros de Lógica da UI
     p_esp_borda = request.GET.get('esp_borda')
     p_centro = request.GET.get('centro')
     p_tol = request.GET.get('tol')
 
+    # Status do coletor em tempo de execução
+    collector_info = get_collector_status()
+    collector_status = collector_info.get("status", "OFFLINE")
+    live_scan_id = collector_info.get("scan_id")
+    is_scanning = collector_info.get("is_scanning", False)
+
+    if req_scan_id:
+        scan_id = req_scan_id
+        is_live_cycle = (scan_id == live_scan_id and is_scanning)
+    else:
+        # Modo Ao Vivo: prioriza ciclo ativo se estiver medindo, senão último ciclo concluído
+        if is_scanning and live_scan_id:
+            scan_id = live_scan_id
+            is_live_cycle = True
+        else:
+            scan_id = LeituraScada.objects.all().aggregate(Max('scan_id'))['scan_id__max']
+            is_live_cycle = False
+
     if not scan_id:
-        # Se não informado, pega o mais recente
-        scan_id = LeituraScada.objects.all().aggregate(Max('scan_id'))['scan_id__max']
-    
-    if not scan_id:
-        return JsonResponse({'scan_id': None, 'data': []})
+        return JsonResponse({
+            'scan_id': None,
+            'collector_status': collector_status,
+            'is_live_cycle': False,
+            'count': 0,
+            'data': []
+        })
 
     # Buscar dados ordenados por Data Leitura (para manter ordem cronológica de varredura)
-    # ou por Eixo X se quiséssemos plotar puramente posicional, mas time é source of truth da coleta.
     leituras = LeituraScada.objects.filter(scan_id=scan_id).order_by('data_leitura')
     
     data = []
     for l in leituras:
-        # Aplica a Regra de Negócio (Geometria + Tolerância)
-        # Passando os parâmetros dinâmicos se existirem
         validacao = ProfileLogic.validar_ponto(
             l.eixo_x, l.eixo_y, 
             esp_borda=p_esp_borda, centro=p_centro, tol=p_tol
@@ -71,6 +90,8 @@ def api_dados_scada(request):
     
     return JsonResponse({
         'scan_id': scan_id,
+        'collector_status': collector_status,
+        'is_live_cycle': is_live_cycle,
         'count': len(data),
         'data': data
     })

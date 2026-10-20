@@ -31,3 +31,8 @@ staticfiles/
 # OS
 .DS_Store
 Thumbs.db
+
+# Runtime Scada Collector
+scada_collector.lock
+scada_collector_status.json
+*.tmp

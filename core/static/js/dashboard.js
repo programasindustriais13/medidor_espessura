@@ -133,6 +133,8 @@ document.addEventListener('DOMContentLoaded', function () {
             const json = await response.json();
             console.log('Dados recebidos:', json); // Debug
 
+            const collStatus = json.collector_status || 'IDLE';
+
             if (json.scan_id) {
                 // Atualizar UI
                 const displayId = json.scan_id.replace('SCAN_', '');
@@ -140,35 +142,77 @@ document.addEventListener('DOMContentLoaded', function () {
 
                 // Formar URL de exportação com os mesmos parâmetros para manter coerência
                 const csvParams = new URLSearchParams(params);
+                exportBtn.href = `/exportar/csv/?${csvParams.toString()}`;
+
                 if (selectedScanId) {
                     statusText.textContent = "Modo: Visualização de Histórico";
                     statusText.style.color = '#fbbf24';
                 } else {
-                    statusText.textContent = "Modo: Tempo Real";
-                    statusText.style.color = '#22c55e';
+                    if (collStatus === 'SCANNING') {
+                        statusText.textContent = `● Medindo — Ciclo em andamento (${json.count} pts)`;
+                        statusText.style.color = '#22c55e';
+                    } else if (collStatus === 'NO_COMMUNICATION') {
+                        statusText.textContent = "⚠️ Sem comunicação com o Scada-LTS";
+                        statusText.style.color = '#ef4444';
+                    } else if (collStatus === 'OFFLINE') {
+                        statusText.textContent = `Coletor offline (Último ciclo: ${displayId})`;
+                        statusText.style.color = '#f59e0b';
+                    } else {
+                        statusText.textContent = `Aguardando novo ciclo (Último medido: ${displayId})`;
+                        statusText.style.color = '#94a3b8';
+                    }
                 }
-                exportBtn.href = `/exportar/csv/?${csvParams.toString()}`;
 
                 // Parsear Dados
                 const points = json.data;
 
                 // Mapear datasets
-                // Ponto medido
+                // Ponto medido com coordenadas reais
                 currentChart.data.datasets[0].data = points.map(p => ({
                     x: p.x, y: p.y, is_ok: p.is_ok, target: p.target, zona: p.zona
                 }));
 
                 // Linhas de Referência (construir perfil contínuo ordenado por X)
-                const sortedPoints = [...points].sort((a, b) => a.x - b.x);
+                if (points.length > 0) {
+                    const sortedPoints = [...points].sort((a, b) => a.x - b.x);
+                    const minX = sortedPoints[0].x;
+                    const maxX = sortedPoints[sortedPoints.length - 1].x;
 
-                currentChart.data.datasets[1].data = sortedPoints.map(p => ({ x: p.x, y: p.max }));
-                currentChart.data.datasets[2].data = sortedPoints.map(p => ({ x: p.x, y: p.target }));
-                currentChart.data.datasets[3].data = sortedPoints.map(p => ({ x: p.x, y: p.min }));
+                    if (minX === maxX) {
+                        // Quando todas as coordenadas X são idênticas (ex: X=0 em medição pontual),
+                        // traça linhas de referência horizontais visíveis delimitando a faixa
+                        const spanMin = minX === 0 ? 0 : minX - 5;
+                        const spanMax = minX === 0 ? 10 : minX + 5;
+                        const p0 = points[0];
+                        currentChart.data.datasets[1].data = [{ x: spanMin, y: p0.max }, { x: spanMax, y: p0.max }];
+                        currentChart.data.datasets[2].data = [{ x: spanMin, y: p0.target }, { x: spanMax, y: p0.target }];
+                        currentChart.data.datasets[3].data = [{ x: spanMin, y: p0.min }, { x: spanMax, y: p0.min }];
+                    } else {
+                        currentChart.data.datasets[1].data = sortedPoints.map(p => ({ x: p.x, y: p.max }));
+                        currentChart.data.datasets[2].data = sortedPoints.map(p => ({ x: p.x, y: p.target }));
+                        currentChart.data.datasets[3].data = sortedPoints.map(p => ({ x: p.x, y: p.min }));
+                    }
+                } else {
+                    currentChart.data.datasets[1].data = [];
+                    currentChart.data.datasets[2].data = [];
+                    currentChart.data.datasets[3].data = [];
+                }
 
                 currentChart.update();
             } else {
                 scanIdText.textContent = "--";
-                if (!selectedScanId) statusText.textContent = "Aguardando novo ciclo...";
+                if (!selectedScanId) {
+                    if (collStatus === 'NO_COMMUNICATION') {
+                        statusText.textContent = "⚠️ Sem comunicação com o Scada-LTS";
+                        statusText.style.color = '#ef4444';
+                    } else if (collStatus === 'OFFLINE') {
+                        statusText.textContent = "Coletor offline (Aguardando inicialização)";
+                        statusText.style.color = '#f59e0b';
+                    } else {
+                        statusText.textContent = "Aguardando novo ciclo...";
+                        statusText.style.color = '#94a3b8';
+                    }
+                }
             }
 
         } catch (error) {

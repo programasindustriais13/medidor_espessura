@@ -279,6 +279,7 @@ class ScadaRepository:
         last_id: Optional[int] = None,
         last_ts: Optional[int] = None,
         limit: int = 500,
+        max_ts: Optional[int] = None,
     ) -> Tuple[List[Dict[str, Any]], Optional[int], Optional[int]]:
         """
         Consumo incremental de medições a partir de um cursor (last_ts, last_id).
@@ -288,7 +289,8 @@ class ScadaRepository:
         - Ordem estritamente cronológica (ts ASC, id ASC);
         - Zero pontos perdidos entre polls;
         - Zero pontos duplicados;
-        - Resiliência contra empates de timestamp no mesmo milissegundo.
+        - Resiliência contra empates de timestamp no mesmo milissegundo;
+        - Suporte a teto temporal (max_ts) para encerramento determinístico de ciclo.
         """
         meta = self.resolve_xid(xid)
         if not meta:
@@ -308,6 +310,10 @@ class ScadaRepository:
         elif last_ts is not None:
             where_clause += " AND pv.ts > %s"
             params.append(last_ts)
+
+        if max_ts is not None:
+            where_clause += " AND pv.ts <= %s"
+            params.append(int(max_ts))
 
         params.append(int(limit))
 
