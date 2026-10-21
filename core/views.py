@@ -64,7 +64,14 @@ def api_dados_scada(request):
             'collector_status': collector_status,
             'is_live_cycle': False,
             'count': 0,
-            'data': []
+            'data': [],
+            'material': {
+                'largura': None,
+                'x_inicial': None,
+                'x_final': None,
+                'pontos_validos': 0,
+                'corte_min': 0.9
+            }
         })
 
     # Buscar dados ordenados por Data Leitura (para manter ordem cronológica de varredura)
@@ -88,12 +95,16 @@ def api_dados_scada(request):
             'ts': l.data_leitura.strftime('%H:%M:%S')
         })
     
+    # Cálculo do tamanho total do material (distância final - distância inicial para espessura > 0.9 mm)
+    info_material = ProfileLogic.calcular_tamanho_material(data, corte_min=0.9)
+
     return JsonResponse({
         'scan_id': scan_id,
         'collector_status': collector_status,
         'is_live_cycle': is_live_cycle,
         'count': len(data),
-        'data': data
+        'data': data,
+        'material': info_material
     })
 
 def exportar_csv(request):

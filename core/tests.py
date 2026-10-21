@@ -405,6 +405,35 @@ class ViewsAndApiTestCase(TestCase):
         self.assertIn("y", ponto)
         self.assertIn("is_ok", ponto)
         self.assertIn("zona", ponto)
+        # Verificação do cálculo de material
+        self.assertIn("material", data)
+        self.assertEqual(data["material"]["largura"], 10.0)
+        self.assertEqual(data["material"]["x_inicial"], 10.0)
+        self.assertEqual(data["material"]["x_final"], 20.0)
+        self.assertEqual(data["material"]["corte_min"], 0.9)
+
+    def test_calcular_tamanho_material_corte_09(self):
+        # Simula medições reais onde o carro andou no vazio antes e depois do material
+        leituras_simuladas = [
+            {'x': 50.0, 'y': 0.0},    # Antes do material (ar)
+            {'x': 75.0, 'y': 0.85},   # Borda externa abaixo do corte
+            {'x': 86.0, 'y': 2.1},    # Início do material (> 0.9mm)
+            {'x': 250.0, 'y': 10.5},  # Centro
+            {'x': 480.0, 'y': 2.3},   # Fim do material (> 0.9mm)
+            {'x': 485.0, 'y': 0.4},   # Carro ainda andando após o material
+            {'x': 490.0, 'y': 0.0},   # Parada final
+        ]
+        res = ProfileLogic.calcular_tamanho_material(leituras_simuladas, corte_min=0.9)
+        self.assertEqual(res['x_inicial'], 86.0)
+        self.assertEqual(res['x_final'], 480.0)
+        self.assertEqual(res['largura'], 394.0)  # 480 - 86 = 394
+        self.assertEqual(res['pontos_validos'], 3)
+
+        # Caso onde nenhum ponto é > 0.9mm
+        vazio = [{'x': 10.0, 'y': 0.2}, {'x': 20.0, 'y': 0.5}]
+        res_vazio = ProfileLogic.calcular_tamanho_material(vazio, corte_min=0.9)
+        self.assertIsNone(res_vazio['largura'])
+        self.assertEqual(res_vazio['pontos_validos'], 0)
 
     def test_exportar_csv(self):
         resp = self.client.get("/exportar/csv/?scan_id=SCAN_TEST_VIEW_01")

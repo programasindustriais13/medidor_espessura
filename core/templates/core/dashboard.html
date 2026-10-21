@@ -32,14 +32,23 @@
         </div>
         <div class="card metric-card">
             <h3>Status do Ciclo</h3>
-            <div class="value" id="current-scan-id">--</div>
+            <div class="value" id="current-scan-id" style="font-size: 1.55rem; word-break: break-all;">--</div>
+        </div>
+        <div class="card metric-card">
+            <h3>Tamanho do Material</h3>
+            <div class="value" id="material-width-val" style="color: var(--accent-color);">-- mm</div>
+            <p class="metric-subtext" id="material-range-subtext" style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 4px;"></p>
         </div>
     </div>
 
     <!-- Gráfico de Perfil -->
     <div class="card chart-card">
-        <div class="chart-header">
+        <div class="chart-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
             <h3>Perfil Transversal do Material</h3>
+            <div class="chart-badge" id="chart-material-badge" style="background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.35); padding: 6px 14px; border-radius: 8px; font-size: 0.9rem; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 8px;">
+                <span>Largura do Material:</span>
+                <strong id="badge-width-val" style="color: var(--accent-color); font-size: 1.05rem;">-- mm</strong>
+            </div>
         </div>
         <div class="chart-container">
             <canvas id="profileChart"></canvas>
@@ -49,5 +58,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{% static 'js/dashboard.js' %}"></script>
+<script src="{% static 'js/dashboard.js' %}?v={% now 'U' %}"></script>
 {% endblock %}

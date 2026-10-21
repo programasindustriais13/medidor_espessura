@@ -61,3 +61,53 @@ class ProfileLogic:
             'lim_max': round(ativo['max'], 3),
             'zona': zona_detectada
         }
+
+    @classmethod
+    def calcular_tamanho_material(cls, pontos, corte_min=0.9):
+        """
+        Calcula o tamanho total (largura) do material medido.
+        Filtra os pontos com espessura > corte_min (ex: 0.9 mm) para desconsiderar
+        o movimento do carro em vazio antes e depois da chapa.
+        Subtrai a distância final pela inicial dos pontos com espessura acima do corte.
+        """
+        if not pontos:
+            return {
+                'largura': None,
+                'x_inicial': None,
+                'x_final': None,
+                'pontos_validos': 0,
+                'corte_min': corte_min,
+            }
+
+        validos = []
+        for p in pontos:
+            if isinstance(p, dict):
+                y_val = p.get('y', 0.0)
+                x_val = p.get('x', 0.0)
+            else:
+                y_val = getattr(p, 'eixo_y', 0.0)
+                x_val = getattr(p, 'eixo_x', 0.0)
+
+            if y_val is not None and y_val > corte_min:
+                validos.append(float(x_val))
+
+        if not validos:
+            return {
+                'largura': None,
+                'x_inicial': None,
+                'x_final': None,
+                'pontos_validos': 0,
+                'corte_min': corte_min,
+            }
+
+        x_min = min(validos)
+        x_max = max(validos)
+        largura = round(x_max - x_min, 2)
+
+        return {
+            'largura': largura,
+            'x_inicial': round(x_min, 2),
+            'x_final': round(x_max, 2),
+            'pontos_validos': len(validos),
+            'corte_min': corte_min,
+        }
