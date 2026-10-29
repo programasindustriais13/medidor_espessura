@@ -98,6 +98,47 @@ class SystemConfiguration(models.Model):
         help_text="Variação máxima aceitável acima do valor nominal (limite superior = nominal + tol)."
     )
 
+    # ── Parâmetros de Análise Dimensional da Banda de Rodagem ──
+    corte_min_espessura_banda = models.FloatField(
+        default=1.0,
+        verbose_name="Corte Mínimo de Espessura da Banda (mm)",
+        help_text="Espessura mínima para descartar leituras fora da chapa ou retorno do carro em vazio."
+    )
+    limiar_coroa_relativo = models.FloatField(
+        default=0.75,
+        verbose_name="Limiar Relativo de Coroa (0 a 1)",
+        help_text="Fator relativo de altura (0.1 a 0.99) para identificar o patamar da coroa acima das laterais."
+    )
+    min_delta_altura_coroa = models.FloatField(
+        default=0.8,
+        verbose_name="Degrau Mínimo da Coroa (mm)",
+        help_text="Diferença mínima de altura entre topo e abas laterais para classificar coroa."
+    )
+    min_pontos_scan = models.IntegerField(
+        default=15,
+        verbose_name="Mínimo de Pontos para Ciclo Concluído",
+        help_text="Quantidade mínima de pontos válidos para considerar a varredura como concluída."
+    )
+    modo_deteccao_coroa = models.CharField(
+        max_length=10,
+        choices=(("auto", "Automático"), ("manual", "Manual (Limites Fixos)")),
+        default="auto",
+        verbose_name="Modo de Detecção da Coroa",
+        help_text="Detecção automática baseada na geometria ou limites manuais em X."
+    )
+    manual_x_inicio_coroa = models.FloatField(
+        null=True,
+        blank=True,
+        verbose_name="X Início Coroa Manual (mm)",
+        help_text="Coordenada X de início da coroa se modo for manual."
+    )
+    manual_x_fim_coroa = models.FloatField(
+        null=True,
+        blank=True,
+        verbose_name="X Fim Coroa Manual (mm)",
+        help_text="Coordenada X de fim da coroa se modo for manual."
+    )
+
     atualizado_em = models.DateTimeField(auto_now=True, verbose_name="Última Atualização")
 
     class Meta:
@@ -134,6 +175,23 @@ class SystemConfiguration(models.Model):
         if self.tolerancia_positiva is None or self.tolerancia_positiva < 0:
             errors["tolerancia_positiva"] = "A tolerância positiva não pode ser negativa."
 
+        if self.corte_min_espessura_banda is None or self.corte_min_espessura_banda < 0:
+            errors["corte_min_espessura_banda"] = "O corte mínimo de espessura não pode ser negativo."
+
+        if self.limiar_coroa_relativo is None or not (0.1 <= self.limiar_coroa_relativo <= 0.99):
+            errors["limiar_coroa_relativo"] = "O limiar relativo da coroa deve estar entre 0.1 e 0.99."
+
+        if self.min_delta_altura_coroa is None or self.min_delta_altura_coroa <= 0:
+            errors["min_delta_altura_coroa"] = "O degrau mínimo de coroa deve ser maior que zero."
+
+        if self.min_pontos_scan is None or self.min_pontos_scan < 3:
+            errors["min_pontos_scan"] = "O mínimo de pontos por scan deve ser de pelo menos 3."
+
+        if self.modo_deteccao_coroa == "manual":
+            if self.manual_x_inicio_coroa is not None and self.manual_x_fim_coroa is not None:
+                if self.manual_x_inicio_coroa >= self.manual_x_fim_coroa:
+                    errors["manual_x_inicio_coroa"] = "O X de início manual deve ser menor que o X de fim."
+
         if errors:
             raise ValidationError(errors)
 
@@ -167,6 +225,13 @@ class SystemConfiguration(models.Model):
                     "espessura_borda_nominal": 2.0,
                     "espessura_centro_nominal": 10.0,
                     "tolerancia_positiva": 0.5,
+                    "corte_min_espessura_banda": 1.0,
+                    "limiar_coroa_relativo": 0.75,
+                    "min_delta_altura_coroa": 0.8,
+                    "min_pontos_scan": 15,
+                    "modo_deteccao_coroa": "auto",
+                    "manual_x_inicio_coroa": None,
+                    "manual_x_fim_coroa": None,
                 }
             )
             return config
@@ -184,8 +249,57 @@ class SystemConfiguration(models.Model):
                 espessura_borda_nominal=2.0,
                 espessura_centro_nominal=10.0,
                 tolerancia_positiva=0.5,
+                corte_min_espessura_banda=1.0,
+                limiar_coroa_relativo=0.75,
+                min_delta_altura_coroa=0.8,
+                min_pontos_scan=15,
+                modo_deteccao_coroa="auto",
+                manual_x_inicio_coroa=None,
+                manual_x_fim_coroa=None,
             )
 
     def __str__(self):
         return f"Configuração Geral (Origem: {self.get_data_source_display()})"
 
+
+class ResultadoDimensionalScan(models.Model):
+    """
+    Persistência dos cálculos e cotas dimensionais calculadas ao encerramento de cada varredura.
+    Vinculado univocamente ao scan_id com integridade e reprodutibilidade metrológica.
+    """
+    STATUS_CHOICES = (
+        ("CONCLUIDO", "Concluído"),
+        ("INCOMPLETO", "Incompleto"),
+        ("DADOS_INSUFICIENTES", "Dados Insuficientes"),
+        ("SEM_COROA_CLARA", "Sem Coroa Identificável"),
+        ("EM_ANDAMENTO", "Em Andamento"),
+    )
+
+    scan_id = models.CharField(max_length=50, unique=True, db_index=True, verbose_name="ID do Ciclo")
+    largura_total = models.FloatField(null=True, blank=True, verbose_name="Largura Total (mm)")
+    largura_coroa = models.FloatField(null=True, blank=True, verbose_name="Largura da Coroa (mm)")
+    espessura_media_coroa = models.FloatField(null=True, blank=True, verbose_name="Espessura Média da Coroa (mm)")
+    espessura_min_coroa = models.FloatField(null=True, blank=True, verbose_name="Espessura Mínima da Coroa (mm)")
+    espessura_max_coroa = models.FloatField(null=True, blank=True, verbose_name="Espessura Máxima da Coroa (mm)")
+    pontos_coroa = models.IntegerField(default=0, verbose_name="Pontos na Coroa")
+    media_aritmetica_coroa = models.FloatField(null=True, blank=True, verbose_name="Média Aritmética da Coroa (mm)")
+    espessura_lateral_esq = models.FloatField(null=True, blank=True, verbose_name="Espessura Lateral Esquerda (mm)")
+    espessura_lateral_dir = models.FloatField(null=True, blank=True, verbose_name="Espessura Lateral Direita (mm)")
+    espessura_lateral_media = models.FloatField(null=True, blank=True, verbose_name="Espessura Lateral Média (mm)")
+    x_esquerda = models.FloatField(null=True, blank=True, verbose_name="X Extremidade Esquerda (mm)")
+    x_direita = models.FloatField(null=True, blank=True, verbose_name="X Extremidade Direita (mm)")
+    x_inicio_coroa = models.FloatField(null=True, blank=True, verbose_name="X Início da Coroa (mm)")
+    x_fim_coroa = models.FloatField(null=True, blank=True, verbose_name="X Fim da Coroa (mm)")
+    total_pontos = models.IntegerField(default=0, verbose_name="Total de Pontos no Ciclo")
+    status_leitura = models.CharField(max_length=30, choices=STATUS_CHOICES, default="CONCLUIDO", verbose_name="Situação da Leitura")
+    motivo_status = models.TextField(blank=True, default="", verbose_name="Motivo / Observações")
+    parametros_calculo = models.JSONField(default=dict, blank=True, verbose_name="Parâmetros Utilizados")
+    calculado_em = models.DateTimeField(auto_now=True, verbose_name="Calculado em")
+
+    class Meta:
+        verbose_name = "Resultado Dimensional do Scan"
+        verbose_name_plural = "Resultados Dimensionais dos Scans"
+        ordering = ['-scan_id']
+
+    def __str__(self):
+        return f"Scan {self.scan_id} - {self.status_leitura} (Larg: {self.largura_total}mm, EspCoroa: {self.espessura_media_coroa}mm)"

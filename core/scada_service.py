@@ -622,6 +622,26 @@ class ScadaAcquisitionService:
                 f"Total de pontos no ciclo: {total_points} (+{drain_saved} no encerramento)."
             )
 
+            # ── Cálculo Dimensional Automático da Banda de Rodagem ──────────
+            try:
+                from .dimensional_analysis import DimensionalAnalyzer
+                dim_res = DimensionalAnalyzer.calcular_e_persistir_scan(closing_scan_id, config=config)
+                if dim_res and dim_res.espessura_media_coroa is not None:
+                    logger.info(
+                        f">>> [DIMENSÕES AUTOMÁTICAS] {closing_scan_id}: "
+                        f"Largura Total={dim_res.largura_total}mm, "
+                        f"Largura Coroa={dim_res.largura_coroa}mm, "
+                        f"ESPESSURA MÉDIA COROA={dim_res.espessura_media_coroa}mm ({dim_res.pontos_coroa} pts)."
+                    )
+                else:
+                    logger.info(
+                        f">>> [DIMENSÕES AUTOMÁTICAS] {closing_scan_id}: "
+                        f"Status={dim_res.status_leitura if dim_res else 'DADOS_INSUFICIENTES'} "
+                        f"({dim_res.motivo_status if dim_res else ''})"
+                    )
+            except Exception as e_dim:
+                logger.error(f"[DIMENSÕES AUTOMÁTICAS] Erro ao calcular dimensões de {closing_scan_id}: {e_dim}")
+
             self.last_completed_scan_id = closing_scan_id
             self.is_scanning = False
             self.current_scan_id = None

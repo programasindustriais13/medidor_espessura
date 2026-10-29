@@ -16,14 +16,70 @@
         </div>
     </div>
 
-    <!-- Configurações de Lógica (ProfileLogic) -->
-    <div class="metrics-row">
+    <!-- Painel de Medições Dimensionais Automáticas (Banda de Rodagem) -->
+    <div class="card dimensional-summary-card" style="background: linear-gradient(145deg, #1e293b, #0f172a); border: 1px solid rgba(56, 189, 248, 0.35); box-shadow: 0 4px 14px rgba(0,0,0,0.25);">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; border-bottom: 1px solid var(--border-color); padding-bottom: 12px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="font-size: 1.4rem;">📐</span>
+                <div>
+                    <h3 style="margin: 0; font-size: 1.1rem; color: #f8fafc; font-weight: 700; letter-spacing: 0.02em;">Medições Dimensionais Automáticas da Banda de Rodagem</h3>
+                    <p style="margin: 2px 0 0 0; font-size: 0.78rem; color: var(--text-secondary);">Cálculo automático de geometria industrial e espessura média por varredura</p>
+                </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                <div style="padding: 5px 12px; border-radius: 6px; font-size: 0.82rem; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.25); color: #38bdf8; font-weight: 600;">
+                    Ciclo: <span id="header-scan-id" style="color: #f8fafc; font-weight: 700;">--</span>
+                </div>
+                <div id="dim-status-badge" style="padding: 5px 14px; border-radius: 6px; font-size: 0.85rem; font-weight: 700; background: #334155; color: #94a3b8; display: inline-flex; align-items: center; gap: 6px;">
+                    <span>●</span> <span id="dim-status-label">Aguardando Ciclo</span>
+                </div>
+            </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px;">
+            <!-- Largura Total da Banda -->
+            <div class="card" style="background: rgba(15, 23, 42, 0.65); padding: 14px; border-radius: 8px; border-left: 4px solid var(--accent-color);">
+                <div style="font-size: 0.78rem; text-transform: uppercase; color: var(--text-secondary); letter-spacing: 0.05em; margin-bottom: 4px; font-weight: 600;">Largura Total da Banda</div>
+                <div id="dim-largura-total" style="font-size: 1.85rem; font-weight: 700; color: #f8fafc;">-- mm</div>
+                <div id="dim-largura-total-sub" style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 4px;">X: -- a -- mm</div>
+            </div>
+
+            <!-- Largura da Coroa -->
+            <div class="card" style="background: rgba(15, 23, 42, 0.65); padding: 14px; border-radius: 8px; border-left: 4px solid #a855f7;">
+                <div style="font-size: 0.78rem; text-transform: uppercase; color: var(--text-secondary); letter-spacing: 0.05em; margin-bottom: 4px; font-weight: 600;">Largura da Coroa (mm)</div>
+                <div id="dim-largura-coroa" style="font-size: 1.85rem; font-weight: 700; color: #f8fafc;">-- mm</div>
+                <div id="dim-largura-coroa-sub" style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 4px;">X: -- a -- mm</div>
+            </div>
+
+            <!-- ESPESSURA MÉDIA DA COROA (DESTAQUE PRINCIPAL) -->
+            <div class="card" style="background: rgba(34, 197, 94, 0.1); padding: 14px; border-radius: 8px; border: 1.5px solid rgba(34, 197, 94, 0.45); border-left: 5px solid #22c55e;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <div style="font-size: 0.78rem; text-transform: uppercase; color: #86efac; font-weight: 700; letter-spacing: 0.05em;">ESPESSURA MÉDIA DA COROA (mm)</div>
+                    <span style="font-size: 0.68rem; background: #22c55e; color: #0f172a; padding: 2px 6px; border-radius: 4px; font-weight: 800;">REQUISITO PRINCIPAL</span>
+                </div>
+                <div id="dim-esp-media-coroa" style="font-size: 2.1rem; font-weight: 800; color: #22c55e;">-- mm</div>
+                <div id="dim-esp-media-coroa-sub" style="font-size: 0.75rem; color: #86efac; margin-top: 4px;">Mín: -- | Máx: -- | -- pts</div>
+            </div>
+
+            <!-- Espessuras Laterais -->
+            <div class="card" style="background: rgba(15, 23, 42, 0.65); padding: 14px; border-radius: 8px; border-left: 4px solid #f59e0b;">
+                <div style="font-size: 0.78rem; text-transform: uppercase; color: var(--text-secondary); letter-spacing: 0.05em; margin-bottom: 4px; font-weight: 600;">Espessuras Laterais (Abas)</div>
+                <div id="dim-esp-lateral-media" style="font-size: 1.85rem; font-weight: 700; color: #f8fafc;">-- mm</div>
+                <div id="dim-esp-lateral-sub" style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 4px;">Esq: -- mm | Dir: -- mm</div>
+            </div>
+        </div>
+
+        <div id="dim-motivo-box" style="margin-top: 14px; padding: 8px 12px; background: rgba(15, 23, 42, 0.5); border-radius: 6px; font-size: 0.8rem; color: var(--text-secondary); display: none;"></div>
+    </div>
+
+    <!-- Configurações de Lógica e Tolerâncias (Ocultas conforme solicitado) -->
+    <div class="metrics-row" style="display: none;">
         <div class="card metric-card">
-            <h3>Espessura Borda (mm)</h3>
+            <h3>Espessura Borda (Nominal)</h3>
             <input type="number" id="logic-esp-borda" value="{{ config.espessura_borda_nominal|stringformat:'.1f'|default:'2.0' }}" step="0.1" class="input-control">
         </div>
         <div class="card metric-card">
-            <h3>Espessura Centro (mm)</h3>
+            <h3>Espessura Centro (Nominal)</h3>
             <input type="number" id="logic-centro" value="{{ config.espessura_centro_nominal|stringformat:'.1f'|default:'10.0' }}" step="0.1" class="input-control">
         </div>
         <div class="card metric-card">
@@ -31,7 +87,7 @@
             <input type="number" id="logic-tol" value="{{ config.tolerancia_positiva|stringformat:'.2f'|default:'0.5' }}" step="0.05" class="input-control">
         </div>
         <div class="card metric-card">
-            <h3>Status do Ciclo</h3>
+            <h3>Ciclo Selecionado</h3>
             <div class="value" id="current-scan-id" style="font-size: 1.55rem; word-break: break-all;">--</div>
         </div>
         <div class="card metric-card">
@@ -41,13 +97,25 @@
         </div>
     </div>
 
-    <!-- Gráfico de Perfil -->
+    <!-- Gráfico de Perfil com Cotas Técnicas (Sem Linhas de Limites) -->
     <div class="card chart-card">
-        <div class="chart-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
-            <h3>Perfil Transversal do Material</h3>
-            <div class="chart-badge" id="chart-material-badge" style="background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.35); padding: 6px 14px; border-radius: 8px; font-size: 0.9rem; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 8px;">
-                <span>Largura do Material:</span>
-                <strong id="badge-width-val" style="color: var(--accent-color); font-size: 1.05rem;">-- mm</strong>
+        <div class="chart-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+            <div>
+                <h3 style="margin: 0; font-size: 1.15rem; color: #f8fafc;">Perfil Transversal da Banda de Rodagem</h3>
+                <p style="margin: 3px 0 0 0; font-size: 0.78rem; color: var(--text-secondary);">Desenho técnico da seção transversal com cotas dimensionais industriais</p>
+            </div>
+            
+            <!-- Controles de Exibição do Gráfico -->
+            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                <button type="button" id="btn-toggle-cotas" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.8rem; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+                    <span>📐</span> Cotas: <strong id="status-cotas-txt" style="color: #38bdf8;">Visíveis</strong>
+                </button>
+                <button type="button" id="btn-toggle-posicao" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.8rem; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+                    <span>↕️</span> Cota Espessura: <strong id="status-posicao-txt" style="color: #4ade80;">Acima da Linha</strong>
+                </button>
+                <button type="button" id="btn-toggle-escala" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.8rem; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+                    <span>🔍</span> Escala: <strong id="status-escala-txt" style="color: #22c55e;">Otimizada</strong>
+                </button>
             </div>
         </div>
         <div class="chart-container">

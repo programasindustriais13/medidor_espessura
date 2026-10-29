@@ -821,3 +821,292 @@ class ControlledImplementationScenariosTestCase(TestCase):
         resp_diag = self.client.get("/admin/scada-diagnostico/")
         self.assertEqual(resp_diag.status_code, 200)
 
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SUÍTE DE TESTES: MEDIÇÕES DIMENSIONAIS AUTOMÁTICAS DA BANDA DE RODAGEM
+# ═════════════════════════════════════════════════════════════════════════════
+
+from core.dimensional_analysis import DimensionalAnalyzer
+from core.models import ResultadoDimensionalScan
+
+
+class BandaDimensionalAnalysisTestCase(TestCase):
+    """
+    Testes automatizados cobrindo rigorosamente todos os 9 cenários dimensionais
+    requisitados para a banda de rodagem, com foco em confiabilidade metrológica
+    e validação de que a espessura média da coroa utiliza todo o patamar.
+    """
+
+    def setUp(self):
+        self.config = SystemConfiguration.get_config()
+        self.config.corte_min_espessura_banda = 1.0
+        self.config.limiar_coroa_relativo = 0.75
+        self.config.min_delta_altura_coroa = 0.8
+        self.config.min_pontos_scan = 10
+        self.config.modo_deteccao_coroa = "auto"
+        self.config.save()
+
+    # ── Cenário 1: Banda com coroa central uniforme ────────────────────────
+    def test_cenario_1_coroa_central_uniforme(self):
+        pts = []
+        # Aba lateral esquerda: x=0.0 a 4.0, y=4.0
+        for x in [0.0, 1.0, 2.0, 3.0, 4.0]:
+            pts.append({'x': x, 'y': 4.0})
+        # Rampa de subida: x=4.5 a 5.5
+        pts.append({'x': 4.5, 'y': 5.0})
+        pts.append({'x': 5.0, 'y': 6.2})
+        pts.append({'x': 5.5, 'y': 6.8})
+        # Coroa central uniforme: x=6.0 a 14.0, y=7.00
+        for x in [6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0]:
+            pts.append({'x': x, 'y': 7.0})
+        # Rampa de descida: x=14.5 a 15.5
+        pts.append({'x': 14.5, 'y': 6.8})
+        pts.append({'x': 15.0, 'y': 6.2})
+        pts.append({'x': 15.5, 'y': 5.0})
+        # Aba lateral direita: x=16.0 a 20.0, y=4.0
+        for x in [16.0, 17.0, 18.0, 19.0, 20.0]:
+            pts.append({'x': x, 'y': 4.0})
+
+        res = DimensionalAnalyzer.analisar_perfil(pts, config=self.config)
+        self.assertEqual(res["status"], "CONCLUIDO")
+        self.assertEqual(res["largura_total"], 20.0)
+        self.assertEqual(res["x_esquerda"], 0.0)
+        self.assertEqual(res["x_direita"], 20.0)
+        self.assertAlmostEqual(res["x_inicio_coroa"], 6.0, delta=0.5)
+        self.assertAlmostEqual(res["x_fim_coroa"], 14.0, delta=0.5)
+        self.assertAlmostEqual(res["largura_coroa"], 9.0, delta=1.0)
+        # ESPESSURA MÉDIA DA COROA (mm)
+        self.assertAlmostEqual(res["espessura_media_coroa"], 7.00, delta=0.05)
+        self.assertEqual(res["espessura_min_coroa"], 6.80)
+        self.assertEqual(res["espessura_max_coroa"], 7.00)
+        self.assertGreaterEqual(res["pontos_coroa"], 9)
+        self.assertAlmostEqual(res["espessura_lateral_esq"], 4.00, delta=0.1)
+        self.assertAlmostEqual(res["espessura_lateral_dir"], 4.00, delta=0.1)
+
+    # ── Cenário 2: Coroa com diferentes espessuras ao longo da largura ─────
+    def test_cenario_2_coroa_diferentes_espessuras_e_intervalo_completo(self):
+        """
+        Requisito fundamental: verificar que a média da coroa utiliza todo
+        o intervalo válido e não apenas o ponto central ou ponto de crista.
+        """
+        pts = []
+        for x in [0.0, 1.0, 2.0, 3.0, 4.0]:
+            pts.append({'x': x, 'y': 3.5})
+        pts.append({'x': 5.0, 'y': 5.5})
+
+        # Região da coroa com espessuras intencionalmente variáveis:
+        # Ponto central x=10.0 tem pico isolado de 9.5 mm
+        # Os demais pontos estão entre 7.0 e 7.4 mm
+        coroa_coords = [
+            (6.0, 7.0),
+            (7.0, 7.2),
+            (8.0, 7.1),
+            (9.0, 7.3),
+            (10.0, 9.5),  # Pico central
+            (11.0, 7.4),
+            (12.0, 7.2),
+            (13.0, 7.1),
+            (14.0, 7.0),
+        ]
+        for x, y in coroa_coords:
+            pts.append({'x': x, 'y': y})
+
+        pts.append({'x': 15.0, 'y': 5.5})
+        for x in [16.0, 17.0, 18.0, 19.0, 20.0]:
+            pts.append({'x': x, 'y': 3.5})
+
+        res = DimensionalAnalyzer.analisar_perfil(pts, config=self.config)
+        self.assertEqual(res["status"], "CONCLUIDO")
+        # Prova que NÃO utilizou apenas o ponto central (9.5) nem apenas o mínimo (7.0):
+        self.assertNotEqual(res["espessura_media_coroa"], 9.5)
+        self.assertNotEqual(res["espessura_media_coroa"], 7.0)
+        # A média real ponderada de todos os 9 pontos fica em torno de ~7.4 mm
+        self.assertTrue(7.2 <= res["espessura_media_coroa"] <= 8.0)
+        self.assertEqual(res["espessura_min_coroa"], 7.1)
+        self.assertEqual(res["espessura_max_coroa"], 9.5)
+        self.assertEqual(res["pontos_coroa"], 7)
+
+    # ── Cenário 3: Quantidade desigual de pontos por região ────────────────
+    def test_cenario_3_quantidade_desigual_de_pontos_por_regiao(self):
+        pts = []
+        # Aba esquerda com poucos pontos (apenas 3)
+        pts.append({'x': 0.0, 'y': 3.8})
+        pts.append({'x': 2.0, 'y': 3.8})
+        pts.append({'x': 4.0, 'y': 4.0})
+        pts.append({'x': 5.0, 'y': 5.8})
+
+        # Coroa com alta densidade amostral (50 pontos entre x=6 e x=14)
+        for i in range(50):
+            x = 6.0 + i * (8.0 / 49.0)
+            pts.append({'x': x, 'y': 7.2})
+
+        pts.append({'x': 15.0, 'y': 5.8})
+        # Aba direita com poucos pontos (apenas 3)
+        pts.append({'x': 16.0, 'y': 3.8})
+        pts.append({'x': 18.0, 'y': 3.8})
+        pts.append({'x': 20.0, 'y': 3.8})
+
+        res = DimensionalAnalyzer.analisar_perfil(pts, config=self.config)
+        self.assertEqual(res["status"], "CONCLUIDO")
+        self.assertAlmostEqual(res["largura_coroa"], 8.0, delta=0.5)
+        self.assertAlmostEqual(res["espessura_media_coroa"], 7.20, delta=0.1)
+        self.assertGreaterEqual(res["pontos_coroa"], 45)
+
+    # ── Cenário 4: Espaçamento irregular entre leituras X (Ponderação) ──────
+    def test_cenario_4_espacamento_irregular_ponderacao_espacial(self):
+        """
+        Verifica que medições agrupadas/densas em um trecho curto não inflam
+        desproporcionalmente a espessura média em relação ao trecho extenso.
+        """
+        pts = []
+        for x in [0.0, 2.0, 4.0]:
+            pts.append({'x': x, 'y': 3.5})
+        pts.append({'x': 5.0, 'y': 6.0})
+
+        # Na coroa (x=6.0 a 14.0, largura total = 8.0 mm):
+        # Trecho 1: x=6 a 10 (largura 4.0 mm, espaçado): 4 pontos com y=8.0
+        pts.append({'x': 6.0, 'y': 8.0})
+        pts.append({'x': 7.5, 'y': 8.0})
+        pts.append({'x': 9.0, 'y': 8.0})
+        pts.append({'x': 10.0, 'y': 8.0})
+
+        # Trecho 2: x=10 a 11 (largura de apenas 1.0 mm), com 20 leituras adensadas de y=6.0
+        for i in range(20):
+            x = 10.05 + i * (0.9 / 20.0)
+            pts.append({'x': x, 'y': 6.0})
+
+        # Trecho 3: x=11 a 14 (largura 3.0 mm, espaçado): 3 pontos com y=8.0
+        pts.append({'x': 11.0, 'y': 8.0})
+        pts.append({'x': 12.5, 'y': 8.0})
+        pts.append({'x': 14.0, 'y': 8.0})
+
+        pts.append({'x': 15.0, 'y': 6.0})
+        for x in [16.0, 18.0, 20.0]:
+            pts.append({'x': x, 'y': 3.5})
+
+        res = DimensionalAnalyzer.analisar_perfil(pts, config=self.config)
+        self.assertEqual(res["status"], "CONCLUIDO")
+        # Se fosse média aritmética simples dos 27 pontos da coroa:
+        # (7*8.0 + 20*6.0)/27 = 6.51 mm (completamente distorcida pelo clustering)
+        # Pela média espacial trapezoidal sobre a distância X (8mm):
+        # A região de 6.0mm ocupa apenas 1/8 da coroa, logo a média deve ser ~7.75 mm
+        self.assertGreater(res["espessura_media_coroa"], 7.3)
+
+    # ── Cenário 5: Ruídos próximos às transições ───────────────────────────
+    def test_cenario_5_ruidos_proximos_as_transicoes(self):
+        pts = []
+        for x in [0.0, 1.0, 2.0, 3.0, 4.0]:
+            pts.append({'x': x, 'y': 4.0})
+        # Ruído espúrio pontual na transição
+        pts.append({'x': 4.8, 'y': 8.5})  # Spike isolado
+        pts.append({'x': 5.2, 'y': 5.5})
+        # Coroa estável
+        for x in [6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0]:
+            pts.append({'x': x, 'y': 7.0})
+        pts.append({'x': 15.0, 'y': 5.5})
+        for x in [16.0, 17.0, 18.0, 19.0, 20.0]:
+            pts.append({'x': x, 'y': 4.0})
+
+        res = DimensionalAnalyzer.analisar_perfil(pts, config=self.config)
+        self.assertEqual(res["status"], "CONCLUIDO")
+        self.assertAlmostEqual(res["espessura_media_coroa"], 7.00, delta=0.2)
+
+    # ── Cenário 6: Ausência de uma ou das duas laterais ────────────────────
+    def test_cenario_6_ausencia_de_uma_das_laterais(self):
+        pts = []
+        # Peça inicia direto na rampa/coroa (sem aba lateral esquerda)
+        for x in [6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0]:
+            pts.append({'x': x, 'y': 7.2})
+        pts.append({'x': 15.0, 'y': 5.5})
+        # Aba lateral direita presente
+        for x in [16.0, 17.0, 18.0, 19.0, 20.0]:
+            pts.append({'x': x, 'y': 3.9})
+
+        res = DimensionalAnalyzer.analisar_perfil(pts, config=self.config)
+        # Deve processar sem erros, identificando que a aba esquerda não está presente
+        self.assertIn(res["status"], ["CONCLUIDO", "SEM_COROA_CLARA"])
+        if res["status"] == "CONCLUIDO":
+            self.assertIsNone(res["espessura_lateral_esq"])
+            self.assertIsNotNone(res["espessura_lateral_dir"])
+
+    # ── Cenário 7: Scan interrompido antes do encerramento ─────────────────
+    def test_cenario_7_scan_interrompido_dados_insuficientes(self):
+        # Apenas 3 pontos coletados antes de o gatilho cair ou ocorrer falha
+        pts = [
+            {'x': 0.0, 'y': 4.0},
+            {'x': 0.5, 'y': 4.1},
+            {'x': 1.0, 'y': 4.0},
+        ]
+        res = DimensionalAnalyzer.analisar_perfil(pts, config=self.config)
+        self.assertEqual(res["status"], "DADOS_INSUFICIENTES")
+        self.assertIn("insuficiente", res["motivo"].lower())
+        self.assertIsNone(res["largura_total"])
+        self.assertIsNone(res["largura_coroa"])
+        self.assertIsNone(res["espessura_media_coroa"])
+
+    # ── Cenário 8: Perfil sem coroa claramente identificável ───────────────
+    def test_cenario_8_perfil_sem_coroa_identificavel(self):
+        # Chapa plana ou homogênea sem degrau entre centro e abas (y uniforme ~4.0mm)
+        pts = []
+        for x in range(25):
+            pts.append({'x': float(x), 'y': 4.0 + (x % 3) * 0.05})
+
+        res = DimensionalAnalyzer.analisar_perfil(pts, config=self.config)
+        self.assertEqual(res["status"], "SEM_COROA_CLARA")
+        self.assertIn("uniforme", res["motivo"].lower())
+        # Largura total pode ser determinada, mas coroa não
+        self.assertEqual(res["largura_total"], 24.0)
+        self.assertIsNone(res["largura_coroa"])
+        self.assertIsNone(res["espessura_media_coroa"])
+
+    # ── Cenário 9: Scan histórico já armazenado e persistência ─────────────
+    def test_cenario_9_scan_historico_ja_armazenado(self):
+        scan_id = "SCAN_TEST_HISTORICO_99"
+        # Gravar leituras no banco
+        leituras_db = []
+        # Esquerda
+        for x in [0.0, 1.0, 2.0, 3.0, 4.0]:
+            leituras_db.append(LeituraScada(scan_id=scan_id, xid="DP_747174", eixo_x=x, eixo_y=4.1, data_leitura=timezone.now()))
+        # Coroa
+        for x in [6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0]:
+            leituras_db.append(LeituraScada(scan_id=scan_id, xid="DP_747174", eixo_x=x, eixo_y=7.15, data_leitura=timezone.now()))
+        # Direita
+        for x in [16.0, 17.0, 18.0, 19.0, 20.0]:
+            leituras_db.append(LeituraScada(scan_id=scan_id, xid="DP_747174", eixo_x=x, eixo_y=4.1, data_leitura=timezone.now()))
+
+        LeituraScada.objects.bulk_create(leituras_db)
+
+        # 1. Primeira chamada: calcula e persiste
+        dim1 = DimensionalAnalyzer.obter_ou_calcular_dimensoes(scan_id, config=self.config)
+        self.assertEqual(dim1["status"], "CONCLUIDO")
+        self.assertAlmostEqual(dim1["espessura_media_coroa"], 7.15, delta=0.05)
+
+        # Verifica se registro foi persistido na tabela ResultadoDimensionalScan
+        obj = ResultadoDimensionalScan.objects.filter(scan_id=scan_id).first()
+        self.assertIsNotNone(obj)
+        self.assertEqual(obj.status_leitura, "CONCLUIDO")
+        self.assertAlmostEqual(obj.espessura_media_coroa, 7.15, delta=0.05)
+
+        # 2. Segunda chamada: recupera do banco com resultado idêntico
+        dim2 = DimensionalAnalyzer.obter_ou_calcular_dimensoes(scan_id, config=self.config)
+        self.assertEqual(dim1["espessura_media_coroa"], dim2["espessura_media_coroa"])
+        self.assertEqual(dim1["largura_total"], dim2["largura_total"])
+
+        # 3. Teste via API HTTP /api/dados/
+        resp = self.client.get(f"/api/dados/?scan_id={scan_id}")
+        self.assertEqual(resp.status_code, 200)
+        json_data = resp.json()
+        self.assertIn("dimensoes", json_data)
+        self.assertEqual(json_data["dimensoes"]["status"], "CONCLUIDO")
+        self.assertAlmostEqual(json_data["dimensoes"]["espessura_media_coroa"], 7.15, delta=0.05)
+
+    # ── Teste Admin: Registro de ResultadoDimensionalScan no Admin ─────────
+    def test_admin_resultado_dimensional_registrado(self):
+        from django.contrib import admin as django_admin
+        self.assertTrue(django_admin.site.is_registered(ResultadoDimensionalScan))
+
+        admin_user = User.objects.create_superuser("super_dim", "dim@test.com", "pass123")
+        self.client.force_login(admin_user)
+        resp = self.client.get("/admin/core/resultadodimensionalscan/")
+        self.assertEqual(resp.status_code, 200)

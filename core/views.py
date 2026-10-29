@@ -5,6 +5,7 @@ from django.utils import timezone
 from .models import LeituraScada, SystemConfiguration
 from django.db.models import Max
 from .profile_logic import ProfileLogic
+from .dimensional_analysis import DimensionalAnalyzer
 from .scada_service import get_collector_status
 
 def dashboard(request):
@@ -13,8 +14,6 @@ def dashboard(request):
     """
     config = SystemConfiguration.get_config()
     return render(request, 'core/dashboard.html', {'config': config})
-
-
 
 
 def listar_scans(request):
@@ -27,9 +26,10 @@ def listar_scans(request):
     scans = [s for s in scans if s]
     return JsonResponse({'scans': scans})
 
+
 def api_dados_scada(request):
     """
-    Retorna os dados enriquecidos com a lógica de perfil.
+    Retorna os dados enriquecidos com a lógica de perfil e cotas dimensionais calculadas.
     Parâmetro opcional GET 'scan_id'.
     Fornece metadados operacionais de status do coletor em tempo real.
     """
@@ -39,6 +39,9 @@ def api_dados_scada(request):
     p_esp_borda = request.GET.get('esp_borda')
     p_centro = request.GET.get('centro')
     p_tol = request.GET.get('tol')
+
+    # Configuração do sistema
+    config = SystemConfiguration.get_config()
 
     # Status do coletor em tempo de execução
     collector_info = get_collector_status()
@@ -71,6 +74,24 @@ def api_dados_scada(request):
                 'x_final': None,
                 'pontos_validos': 0,
                 'corte_min': 0.9
+            },
+            'dimensoes': {
+                'status': 'DADOS_INSUFICIENTES',
+                'motivo': 'Nenhum ciclo encontrado.',
+                'largura_total': None,
+                'largura_coroa': None,
+                'espessura_media_coroa': None,
+                'espessura_min_coroa': None,
+                'espessura_max_coroa': None,
+                'pontos_coroa': 0,
+                'media_aritmetica_coroa': None,
+                'espessura_lateral_esq': None,
+                'espessura_lateral_dir': None,
+                'espessura_lateral_media': None,
+                'x_esquerda': None,
+                'x_direita': None,
+                'x_inicio_coroa': None,
+                'x_fim_coroa': None,
             }
         })
 
@@ -95,8 +116,15 @@ def api_dados_scada(request):
             'ts': l.data_leitura.strftime('%H:%M:%S')
         })
     
-    # Cálculo do tamanho total do material (distância final - distância inicial para espessura > 0.9 mm)
+    # Cálculo do tamanho total do material (compatibilidade com corte > 0.9mm)
     info_material = ProfileLogic.calcular_tamanho_material(data, corte_min=0.9)
+
+    # Análise Dimensional Automática da Banda de Rodagem
+    dimensoes = DimensionalAnalyzer.obter_ou_calcular_dimensoes(
+        scan_id=scan_id,
+        config=config,
+        is_live_cycle=is_live_cycle
+    )
 
     return JsonResponse({
         'scan_id': scan_id,
@@ -104,14 +132,18 @@ def api_dados_scada(request):
         'is_live_cycle': is_live_cycle,
         'count': len(data),
         'data': data,
-        'material': info_material
+        'material': info_material,
+        'dimensoes': dimensoes
     })
+
 
 def exportar_csv(request):
     """
     Gera relatório CSV ajustado conforme regras industriais.
+    Inclui cabeçalho dimensional se gerado a partir de um scan_id individual.
     """
     scan_id = request.GET.get('scan_id')
+    config = SystemConfiguration.get_config()
     
     # Parâmetros de Lógica da UI
     p_esp_borda = request.GET.get('esp_borda')
@@ -128,8 +160,24 @@ def exportar_csv(request):
     response = HttpResponse(content_type='text/csv')
     response['Content-Disposition'] = f'attachment; filename="{filename}"'
 
-    writer = csv.writer(response, delimiter=';') 
-    
+    writer = csv.writer(response, delimiter=';')
+
+    if scan_id:
+        dim = DimensionalAnalyzer.obter_ou_calcular_dimensoes(scan_id, config=config)
+        if dim and dim.get("status") == "CONCLUIDO":
+            writer.writerow(["# RELATORIO DIMENSIONAL DA BANDA DE RODAGEM"])
+            writer.writerow([f"# Ciclo Scan ID: {scan_id}"])
+            writer.writerow([f"# Largura Total: {str(dim.get('largura_total')).replace('.', ',')} mm"])
+            writer.writerow([f"# Largura Coroa: {str(dim.get('largura_coroa')).replace('.', ',')} mm"])
+            writer.writerow([f"# ESPESSURA MEDIA DA COROA: {str(dim.get('espessura_media_coroa')).replace('.', ',')} mm"])
+            writer.writerow([f"# Espessura Min Coroa: {str(dim.get('espessura_min_coroa')).replace('.', ',')} mm"])
+            writer.writerow([f"# Espessura Max Coroa: {str(dim.get('espessura_max_coroa')).replace('.', ',')} mm"])
+            writer.writerow([f"# Pontos Validos Coroa: {dim.get('pontos_coroa', 0)}"])
+            writer.writerow([f"# Espessura Lateral Esquerda: {str(dim.get('espessura_lateral_esq')).replace('.', ',')} mm"])
+            writer.writerow([f"# Espessura Lateral Direita: {str(dim.get('espessura_lateral_dir')).replace('.', ',')} mm"])
+            writer.writerow([f"# Situacao: {dim.get('status')}"])
+            writer.writerow([])
+
     writer.writerow([
         'Scan ID', 
         'X (mm)', 
