@@ -14,12 +14,18 @@ if not exist "venv\Scripts\python.exe" (
     exit /b 1
 )
 
-echo [1/2] Iniciando Servidor Web Django na porta 8282...
+echo [1/3] Verificando e aplicando migracoes pendentes no banco de dados...
+.\venv\Scripts\python.exe manage.py migrate --noinput
+if errorlevel 1 (
+    echo [AVISO] Houve um problema ao aplicar as migracoes.
+)
+
+echo [2/3] Iniciando Servidor Web Django na porta 8282...
 start "Servidor Web [Porta 8282]" cmd /k "title Servidor Web [Porta 8282] & .\venv\Scripts\python.exe manage.py runserver 0.0.0.0:8282"
 
 ping -n 3 127.0.0.1 >nul
 
-echo [2/2] Iniciando Coletor Industrial Scada-LTS...
+echo [3/3] Iniciando Coletor Industrial Scada-LTS...
 start "Coletor Scada-LTS" cmd /k "title Coletor Scada-LTS & .\venv\Scripts\python.exe manage.py collect_scada"
 
 echo.
