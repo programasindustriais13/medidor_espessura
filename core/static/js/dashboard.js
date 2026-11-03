@@ -42,6 +42,15 @@ document.addEventListener('DOMContentLoaded', function () {
     const btnToggleEscala = document.getElementById('btn-toggle-escala');
     const statusEscalaTxt = document.getElementById('status-escala-txt');
 
+    // Elementos do Indicador Permanente de Espessura Atual
+    const liveThicknessVal = document.getElementById('live-thickness-val');
+    const livePosX = document.getElementById('live-pos-x');
+    const liveRawInfo = document.getElementById('live-raw-info');
+    const liveStatusBadge = document.getElementById('live-status-badge');
+    const liveStatusDot = document.getElementById('live-status-dot');
+    const liveStatusLabel = document.getElementById('live-status-label');
+    const liveIndicatorDot = document.getElementById('live-indicator-dot');
+
     // Estados de Exibição
     let showTechnicalDimensions = true;
     let thicknessPlacement = 'above'; // 'above' (Acima da Linha) ou 'below' (Abaixo da Linha)
@@ -686,6 +695,96 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
+    /**
+     * Atualiza o indicador permanente de Espessura Atual no Dashboard.
+     * Funciona em tempo real com sensor em repouso (gatilho=0) ou durante varredura.
+     * NUNCA confunde ausência de leitura/fora da faixa com espessura 0.
+     */
+    function updateLiveThicknessUI(espAtual) {
+        if (!liveThicknessVal) return;
+
+        if (!espAtual || espAtual.status === 'OFFLINE' || espAtual.status === 'SEM_LEITURA') {
+            liveThicknessVal.textContent = '-- mm';
+            liveThicknessVal.style.color = '#94a3b8';
+            if (livePosX) livePosX.textContent = '-- mm';
+            if (liveRawInfo) liveRawInfo.textContent = '';
+            if (liveStatusLabel) {
+                liveStatusLabel.textContent = espAtual && espAtual.status === 'OFFLINE' ? 'Coletor Offline' : 'Aguardando Leitura';
+            }
+            if (liveStatusBadge) {
+                liveStatusBadge.style.background = 'rgba(148, 163, 184, 0.1)';
+                liveStatusBadge.style.borderColor = 'rgba(148, 163, 184, 0.25)';
+                liveStatusBadge.style.color = '#94a3b8';
+            }
+            if (liveStatusDot) liveStatusDot.textContent = '●';
+            if (liveIndicatorDot) {
+                liveIndicatorDot.style.backgroundColor = '#94a3b8';
+                liveIndicatorDot.classList.remove('live-pulse-dot');
+            }
+            return;
+        }
+
+        // Posição X do Sensor
+        if (espAtual.posicao_x !== null && espAtual.posicao_x !== undefined) {
+            const posXFormatted = Number(espAtual.posicao_x).toFixed(1).replace('.', ',');
+            if (livePosX) livePosX.textContent = `${posXFormatted} mm`;
+        } else {
+            if (livePosX) livePosX.textContent = '-- mm';
+        }
+
+        // Valor bruto auxiliar para diagnóstico
+        if (liveRawInfo && espAtual.valor_bruto !== null && espAtual.valor_bruto !== undefined) {
+            liveRawInfo.textContent = `(Bruto: ${espAtual.valor_bruto})`;
+        } else if (liveRawInfo) {
+            liveRawInfo.textContent = '';
+        }
+
+        // Espessura Calculada (mm)
+        if (espAtual.valido && espAtual.espessura_mm !== null && espAtual.espessura_mm !== undefined) {
+            const espFormatted = Number(espAtual.espessura_mm).toFixed(2).replace('.', ',');
+            liveThicknessVal.textContent = `${espFormatted} mm`;
+            liveThicknessVal.style.color = '#38bdf8';
+
+            if (liveStatusLabel) liveStatusLabel.textContent = 'Ao Vivo';
+            if (liveStatusBadge) {
+                liveStatusBadge.style.background = 'rgba(34, 197, 94, 0.15)';
+                liveStatusBadge.style.borderColor = 'rgba(34, 197, 94, 0.4)';
+                liveStatusBadge.style.color = '#4ade80';
+            }
+            if (liveStatusDot) liveStatusDot.textContent = '●';
+            if (liveIndicatorDot) {
+                liveIndicatorDot.style.backgroundColor = '#22c55e';
+                liveIndicatorDot.classList.add('live-pulse-dot');
+            }
+        } else {
+            // Condição inválida ou fora da faixa física:
+            // REGRA MANDATÓRIA: NUNCA exibir 0,00 mm quando inválido; apresentar '-- mm'
+            liveThicknessVal.textContent = '-- mm';
+            liveThicknessVal.style.color = '#f59e0b';
+
+            const statusMap = {
+                'FORA_DA_FAIXA': 'Fora da Faixa Calibrada',
+                'SEM_CALIBRACAO': 'Sem Calibração Ativa',
+                'AMOSTRA_INCOERENTE': 'Amostra Incoerente',
+                'STALE': 'Leitura Obsoleta',
+                'PONTOS_INSUFICIENTES': 'Pontos Insuficientes'
+            };
+            const labelText = statusMap[espAtual.status] || espAtual.status || 'Leitura Inválida';
+
+            if (liveStatusLabel) liveStatusLabel.textContent = labelText;
+            if (liveStatusBadge) {
+                liveStatusBadge.style.background = 'rgba(245, 158, 11, 0.15)';
+                liveStatusBadge.style.borderColor = 'rgba(245, 158, 11, 0.4)';
+                liveStatusBadge.style.color = '#fbbf24';
+            }
+            if (liveStatusDot) liveStatusDot.textContent = '⚠️';
+            if (liveIndicatorDot) {
+                liveIndicatorDot.style.backgroundColor = '#f59e0b';
+                liveIndicatorDot.classList.remove('live-pulse-dot');
+            }
+        }
+    }
+
     async function fetchData() {
         try {
             const params = new URLSearchParams();
@@ -697,6 +796,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
             const response = await fetch(`/api/dados/?${params.toString()}`);
             const json = await response.json();
+
+            // Atualiza sempre o indicador permanente de Espessura Atual (independente de varredura ou scan_id)
+            updateLiveThicknessUI(json.espessura_atual);
 
             const collStatus = json.collector_status || 'IDLE';
             const isScanning = collStatus === 'SCANNING' || json.is_live_cycle;
@@ -736,14 +838,6 @@ document.addEventListener('DOMContentLoaded', function () {
                 const dim = json.dimensoes;
 
                 updateDimensionalUI(dim, isScanning);
-
-                // Atualiza pill da calibração ativa se presente
-                if (json.calibracao && json.calibracao.descricao) {
-                    const calibPill = document.getElementById('calib-desc-pill');
-                    if (calibPill) {
-                        calibPill.textContent = `Calibração: ${json.calibracao.descricao}`;
-                    }
-                }
 
                 let mat = json.material;
                 if (mat && mat.largura !== null && mat.largura !== undefined) {

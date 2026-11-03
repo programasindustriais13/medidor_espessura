@@ -481,3 +481,167 @@ class MultipointCalibrationTestCase(TestCase):
         self.assertIn(scan_id, csv_content)
         self.assertIn("80,0", csv_content)
         self.assertIn("VALIDO", csv_content)
+
+
+class InstantThicknessReadingTestCase(TestCase):
+    """
+    Testes específicos para o indicador permanente de 'Espessura Atual':
+    - Exibe a espessura atual independentemente de haver varredura iniciada;
+    - Utiliza DP_632601 (bruto), DP_648291 (posição X) e Calibração Ativa;
+    - Não depende de DP_887366 e não grava leituras avulsas no histórico de varreduras;
+    - Retorna '-- mm' (None) quando a leitura for inválida ou fora da faixa, sem confundir com 0;
+    - O dashboard não exibe mais a identificação da calibração no cabeçalho;
+    - O card de destaque 'Espessura Atual' permanece visível no dashboard.
+    """
+
+    def setUp(self):
+        CalibrationService.clear_cache()
+        self.config = SystemConfiguration.get_config()
+        self.config.modo_aquisicao = "calibrado"
+        self.config.save()
+        self.calib_inicial = CalibracaoEspessura.objects.filter(ativa=True).first()
+
+    def test_instant_reading_calculated_correctly_without_scan(self):
+        """Posicionamento manual de material na posição X=260 calcula espessura sem iniciar scan."""
+        initial_count = LeituraScada.objects.count()
+
+        # Posição 260, bruto 782 -> zero=348.0, dif=434, fator=30/433.5 ~ 0.069204...
+        res = ScadaAcquisitionService.calcular_leitura_instantanea(
+            pos_x=260.0,
+            raw_esp=782.0,
+            config=self.config,
+        )
+
+        self.assertTrue(res["valido"])
+        self.assertEqual(res["status"], "VALIDO")
+        self.assertEqual(res["posicao_x"], 260.0)
+        self.assertEqual(res["valor_bruto"], 782.0)
+        self.assertAlmostEqual(res["espessura_mm"], 30.03, places=2)
+
+        # Regra industrial: NÃO registra medições avulsas no histórico
+        self.assertEqual(LeituraScada.objects.count(), initial_count)
+
+    def test_instant_reading_out_of_range_shows_none_not_zero(self):
+        """Posição fora da faixa física calibrada (ex: 50 ou 600) não retorna espessura zero."""
+        # Abaixo de 80 (ex: 50 mm)
+        res_low = ScadaAcquisitionService.calcular_leitura_instantanea(
+            pos_x=50.0,
+            raw_esp=782.0,
+            config=self.config,
+        )
+        self.assertFalse(res_low["valido"])
+        self.assertIsNone(res_low["espessura_mm"], "Leitura fora da faixa não pode ser 0.0; deve ser None.")
+        self.assertEqual(res_low["status"], "FORA_DA_FAIXA")
+
+        # Acima de 543 (ex: 600 mm)
+        res_high = ScadaAcquisitionService.calcular_leitura_instantanea(
+            pos_x=600.0,
+            raw_esp=782.0,
+            config=self.config,
+        )
+        self.assertFalse(res_high["valido"])
+        self.assertIsNone(res_high["espessura_mm"], "Leitura fora da faixa não pode ser 0.0; deve ser None.")
+        self.assertEqual(res_high["status"], "FORA_DA_FAIXA")
+
+    def test_instant_reading_stale_or_incoherent_timestamps(self):
+        """Diferença temporal excessiva entre os sensores identifica amostra incoerente."""
+        now_ms = int(time.time() * 1000)
+        stale_ts = now_ms - 60000  # 60s atrás (acima do limite padrão de 30s)
+
+        res = ScadaAcquisitionService.calcular_leitura_instantanea(
+            pos_x=260.0,
+            raw_esp=782.0,
+            ts_pos=now_ms,
+            ts_raw=stale_ts,
+            config=self.config,
+        )
+        self.assertFalse(res["valido"])
+        self.assertEqual(res["status"], "AMOSTRA_INCOERENTE")
+        self.assertIsNone(res["espessura_mm"])
+
+    def test_instant_reading_missing_sensors(self):
+        """Sensores desconectados ou ausência de leitura retornam SEM_LEITURA com espessura None."""
+        res = ScadaAcquisitionService.calcular_leitura_instantanea(
+            pos_x=None,
+            raw_esp=None,
+            config=self.config,
+        )
+        self.assertFalse(res["valido"])
+        self.assertEqual(res["status"], "SEM_LEITURA")
+        self.assertIsNone(res["espessura_mm"])
+
+    def test_api_dados_scada_provides_espessura_atual(self):
+        """Endpoint /api/dados/ retorna espessura_atual com o contrato esperado."""
+        client = Client()
+        resp = client.get("/api/dados/")
+        self.assertEqual(resp.status_code, 200)
+        json_data = resp.json()
+
+        self.assertIn("espessura_atual", json_data)
+        esp = json_data["espessura_atual"]
+        self.assertIn("valido", esp)
+        self.assertIn("espessura_mm", esp)
+        self.assertIn("posicao_x", esp)
+        self.assertIn("status", esp)
+
+    def test_dashboard_ui_removes_calibration_identification(self):
+        """Dashboard não deve conter a identificação da calibração ativa no cabeçalho."""
+        client = Client()
+        resp = client.get("/")
+        self.assertEqual(resp.status_code, 200)
+        html = resp.content.decode("utf-8")
+
+        # Não deve haver o pill de calibração nem o texto de calibração ativa
+        self.assertNotIn('id="calib-desc-pill"', html)
+        self.assertNotIn("Calibração Ativa Multiponto", html)
+        self.assertNotIn("Calibração Inicial Multiponto - Padrão 30mm", html)
+
+    def test_dashboard_ui_renders_permanent_espessura_atual_card(self):
+        """Dashboard deve renderizar o card permanente de 'Espessura Atual'."""
+        client = Client()
+        resp = client.get("/")
+        self.assertEqual(resp.status_code, 200)
+        html = resp.content.decode("utf-8")
+
+        self.assertIn("Espessura Atual", html)
+        self.assertIn('id="live-thickness-val"', html)
+        self.assertIn('id="live-pos-x"', html)
+        self.assertIn('id="live-status-badge"', html)
+        self.assertIn("live-thickness-card", html)
+
+    @patch.object(ScadaAcquisitionService, "read_trigger", return_value=False)
+    def test_process_cycle_idle_updates_instant_thickness_without_saving(self, mock_trigger):
+        """Em repouso (gatilho=0), process_cycle atualiza a leitura instantânea sem salvar varredura."""
+        service = ScadaAcquisitionService()
+        initial_count = LeituraScada.objects.count()
+
+        # Mock da consulta de sensores no ScadaRepository
+        mock_batch = {
+            self.config.xid_posicao: {
+                "xid": self.config.xid_posicao,
+                "value": 170.0,
+                "ts": int(time.time() * 1000),
+            },
+            self.config.xid_bruto_espessura: {
+                "xid": self.config.xid_bruto_espessura,
+                "value": 783.0,
+                "ts": int(time.time() * 1000),
+            },
+        }
+
+        with patch.object(service.repo, "get_last_values_batch", return_value=mock_batch):
+            status_res = service.process_cycle()
+
+        self.assertEqual(status_res["status"], "IDLE")
+        self.assertFalse(status_res["is_scanning"])
+        self.assertEqual(status_res["saved"], 0)
+        self.assertEqual(LeituraScada.objects.count(), initial_count, "Nenhum ponto pode ser salvo em repouso.")
+
+        esp = status_res.get("espessura_atual")
+        self.assertIsNotNone(esp)
+        self.assertTrue(esp["valido"])
+        self.assertEqual(esp["posicao_x"], 170.0)
+        self.assertEqual(esp["valor_bruto"], 783.0)
+        # Na posição 170: zero=350.0, bloco=783.0 -> dif=433.0, fator=30/433.5 -> espessura ~ 29.97 mm
+        self.assertAlmostEqual(esp["espessura_mm"], 29.97, places=2)
+

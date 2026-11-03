@@ -53,6 +53,22 @@ def api_dados_scada(request):
     collector_status = collector_info.get("status", "OFFLINE")
     live_scan_id = collector_info.get("scan_id")
     is_scanning = collector_info.get("is_scanning", False)
+    espessura_atual = collector_info.get("espessura_atual")
+
+    # Fallback se o coletor estiver offline ou não reportou espessura_atual ainda
+    if not espessura_atual or collector_status == "OFFLINE":
+        try:
+            from .scada_service import ScadaAcquisitionService
+            espessura_atual = ScadaAcquisitionService.obter_leitura_instantanea_direta(config)
+        except Exception:
+            espessura_atual = {
+                "valido": False,
+                "espessura_mm": None,
+                "posicao_x": None,
+                "valor_bruto": None,
+                "status": "OFFLINE",
+                "motivo": "Coletor e Scada indisponíveis",
+            }
 
     if req_scan_id:
         scan_id = req_scan_id
@@ -71,6 +87,7 @@ def api_dados_scada(request):
             'scan_id': None,
             'collector_status': collector_status,
             'is_live_cycle': False,
+            'espessura_atual': espessura_atual,
             'count': 0,
             'data': [],
             'material': {
@@ -141,6 +158,7 @@ def api_dados_scada(request):
         'scan_id': scan_id,
         'collector_status': collector_status,
         'is_live_cycle': is_live_cycle,
+        'espessura_atual': espessura_atual,
         'count': len(data),
         'data': data,
         'material': info_material,

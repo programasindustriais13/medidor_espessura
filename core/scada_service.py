@@ -360,6 +360,167 @@ class ScadaAcquisitionService:
 
         return coords
 
+    @classmethod
+    def calcular_leitura_instantanea(
+        cls,
+        pos_x: Optional[float],
+        raw_esp: Optional[float],
+        ts_pos: Optional[int] = None,
+        ts_raw: Optional[int] = None,
+        config: Optional[SystemConfiguration] = None,
+    ) -> Dict[str, Any]:
+        """
+        Calcula a espessura física instantânea (mm) a partir dos sensores de posição e espessura bruta,
+        aplicando a calibração multiponto ativa com interpolação linear do zero e fator de conversão.
+        NÃO salva nada no banco de dados e NÃO cria novos ciclos de varredura.
+        """
+        now_ms = int(time.time() * 1000)
+        ref_ts = ts_raw or ts_pos or now_ms
+
+        if pos_x is None or raw_esp is None:
+            return {
+                "valido": False,
+                "espessura_mm": None,
+                "posicao_x": pos_x,
+                "valor_bruto": raw_esp,
+                "zero_interpolado": None,
+                "fator_conversao": None,
+                "status": "SEM_LEITURA",
+                "motivo": "Aguardando leitura dos sensores (posição ou valor bruto indisponível).",
+                "ts": ref_ts,
+            }
+
+        # Validação de coerência temporal
+        max_time_diff_ms = getattr(config, "tolerancia_temporal_ms", 500) if config else 500
+        limite_stale_ms = (getattr(config, "limite_stale_segundos", 30) or 30) * 1000 if config else 30000
+
+        if ts_pos is not None and ts_raw is not None:
+            delta_t = abs(ts_pos - ts_raw)
+            if delta_t > limite_stale_ms:
+                return {
+                    "valido": False,
+                    "espessura_mm": None,
+                    "posicao_x": pos_x,
+                    "valor_bruto": raw_esp,
+                    "zero_interpolado": None,
+                    "fator_conversao": None,
+                    "status": "AMOSTRA_INCOERENTE",
+                    "motivo": f"Amostras defasadas no tempo ({delta_t}ms > limite {limite_stale_ms}ms).",
+                    "ts": ref_ts,
+                }
+
+        from .calibration_service import CalibrationService
+        active_cal = CalibrationService.get_active_calibration()
+
+        if not active_cal:
+            return {
+                "valido": False,
+                "espessura_mm": None,
+                "posicao_x": pos_x,
+                "valor_bruto": raw_esp,
+                "zero_interpolado": None,
+                "fator_conversao": None,
+                "status": "SEM_CALIBRACAO",
+                "motivo": "Nenhuma calibração ativa no sistema.",
+                "ts": ref_ts,
+            }
+
+        calc = CalibrationService.calcular_espessura(pos_x, raw_esp, calibracao=active_cal)
+
+        if calc.get("valido"):
+            esp_mm = round(calc["espessura_mm"], 2)
+            return {
+                "valido": True,
+                "espessura_mm": esp_mm,
+                "espessura_mm_raw": calc["espessura_mm"],
+                "posicao_x": pos_x,
+                "valor_bruto": raw_esp,
+                "zero_interpolado": calc.get("zero_interpolado"),
+                "fator_conversao": calc.get("fator_conversao"),
+                "status": "VALIDO",
+                "motivo": "Leitura instantânea válida.",
+                "ts": ref_ts,
+            }
+        else:
+            return {
+                "valido": False,
+                "espessura_mm": None,
+                "posicao_x": pos_x,
+                "valor_bruto": raw_esp,
+                "zero_interpolado": calc.get("zero_interpolado"),
+                "fator_conversao": calc.get("fator_conversao"),
+                "status": calc.get("status", "INVALIDO"),
+                "motivo": calc.get("motivo", "Leitura fora da calibração."),
+                "ts": ref_ts,
+            }
+
+    @classmethod
+    def obter_leitura_instantanea_direta(
+        cls, config: Optional[SystemConfiguration] = None
+    ) -> Dict[str, Any]:
+        """
+        Consulta sob demanda os Data Points no Scada-LTS (MySQL ou REST)
+        e calcula a espessura instantânea atual sem gravar no banco de dados.
+        Utilizado como fallback quando o processo coletor contínuo estiver offline.
+        """
+        if config is None:
+            config = SystemConfiguration.get_config()
+
+        pos_x = None
+        raw_esp = None
+        ts_pos = None
+        ts_raw = None
+
+        try:
+            if config.data_source == "mysql":
+                repo = ScadaRepository()
+                latest = repo.get_last_values_batch([config.xid_posicao, config.xid_bruto_espessura])
+                pos_info = latest.get(config.xid_posicao)
+                raw_info = latest.get(config.xid_bruto_espessura)
+                if pos_info and pos_info.get("value") is not None:
+                    pos_x = float(pos_info["value"])
+                    ts_pos = int(pos_info["ts"])
+                if raw_info and raw_info.get("value") is not None:
+                    raw_esp = float(raw_info["value"])
+                    ts_raw = int(raw_info["ts"])
+            else:
+                base_url = getattr(settings, "SCADA_REST_BASE_URL", "http://192.168.0.202:8080/Scada-LTS")
+                session = requests.Session()
+                url_pos = f"{base_url}/api/point_value/getValue/{config.xid_posicao}"
+                url_raw = f"{base_url}/api/point_value/getValue/{config.xid_bruto_espessura}"
+                r_pos = session.get(url_pos, timeout=1.5)
+                r_raw = session.get(url_raw, timeout=1.5)
+                if r_pos.status_code == 200:
+                    d_pos = r_pos.json()
+                    if d_pos.get("value") is not None:
+                        pos_x = float(d_pos["value"])
+                        ts_pos = int(d_pos.get("ts") or time.time() * 1000)
+                if r_raw.status_code == 200:
+                    d_raw = r_raw.json()
+                    if d_raw.get("value") is not None:
+                        raw_esp = float(d_raw["value"])
+                        ts_raw = int(d_raw.get("ts") or time.time() * 1000)
+        except Exception as e:
+            return {
+                "valido": False,
+                "espessura_mm": None,
+                "posicao_x": None,
+                "valor_bruto": None,
+                "zero_interpolado": None,
+                "fator_conversao": None,
+                "status": "OFFLINE",
+                "motivo": f"Comunicação direta indisponível: {e}",
+                "ts": int(time.time() * 1000),
+            }
+
+        return cls.calcular_leitura_instantanea(
+            pos_x=pos_x,
+            raw_esp=raw_esp,
+            ts_pos=ts_pos,
+            ts_raw=ts_raw,
+            config=config,
+        )
+
     def _collect_calibrated_rest(self, config: SystemConfiguration) -> int:
         """
         Coleta medições calibradas via REST API a partir de dois Data Points independentes:
@@ -404,6 +565,11 @@ class ScadaAcquisitionService:
             ts_pos = int(data_pos.get("ts") or time.time() * 1000)
             ts_raw = int(data_raw.get("ts") or time.time() * 1000)
             dt_aware = self.repo.ts_to_datetime(ts_pos)
+
+            self.last_pos_x = pos_x
+            self.last_pos_x_ts = ts_pos
+            self.last_raw_thickness = raw_esp
+            self.last_raw_thickness_ts = ts_raw
 
             max_time_diff_ms = getattr(config, "tolerancia_temporal_ms", 500)
             limite_stale_ms = getattr(config, "limite_stale_segundos", 30) * 1000
@@ -529,6 +695,10 @@ class ScadaAcquisitionService:
                         pos_x = float(val)
                     except (ValueError, TypeError):
                         continue
+
+                    self.last_pos_x = pos_x
+                    self.last_pos_x_ts = ts_ms
+                    self.last_pos_x_dt = dt_aware
 
                     # Filtro espacial em X (ruído de encoder)
                     is_first = (self.last_valid_x == -999.0)
@@ -944,12 +1114,56 @@ class ScadaAcquisitionService:
             self.last_pos_x = None
             self.last_pos_x_ts = None
 
-        # ── Varredura Ativa (Nível Alto) ───────────────────────────────────
+        # ── Varredura Ativa (Nível Alto) vs Repouso (Nível Baixo) ──────────
         if self.is_scanning:
             if config.data_source == "mysql":
                 saved_count = self._collect_measurements_mysql(config)
             else:
                 saved_count = self._collect_measurements_rest(config)
+        else:
+            # ── Repouso (IDLE - Gatilho 0) ─────────────────────────────────
+            # Atualiza leitura instantânea dos sensores sem gravar no histórico de ciclos
+            if getattr(config, "modo_aquisicao", "calibrado") == "calibrado":
+                try:
+                    if config.data_source == "mysql":
+                        latest = self.repo.get_last_values_batch(
+                            [config.xid_posicao, config.xid_bruto_espessura]
+                        )
+                        pos_info = latest.get(config.xid_posicao)
+                        raw_info = latest.get(config.xid_bruto_espessura)
+                        if pos_info and pos_info.get("value") is not None:
+                            self.last_pos_x = float(pos_info["value"])
+                            self.last_pos_x_ts = int(pos_info["ts"])
+                        if raw_info and raw_info.get("value") is not None:
+                            self.last_raw_thickness = float(raw_info["value"])
+                            self.last_raw_thickness_ts = int(raw_info["ts"])
+                    else:
+                        base_url = getattr(settings, "SCADA_REST_BASE_URL", "http://192.168.0.202:8080/Scada-LTS")
+                        url_pos = f"{base_url}/api/point_value/getValue/{config.xid_posicao}"
+                        url_raw = f"{base_url}/api/point_value/getValue/{config.xid_bruto_espessura}"
+                        r_pos = self.http_session.get(url_pos, timeout=1.5)
+                        r_raw = self.http_session.get(url_raw, timeout=1.5)
+                        if r_pos.status_code == 200:
+                            d_pos = r_pos.json()
+                            if d_pos.get("value") is not None:
+                                self.last_pos_x = float(d_pos["value"])
+                                self.last_pos_x_ts = int(d_pos.get("ts") or time.time() * 1000)
+                        if r_raw.status_code == 200:
+                            d_raw = r_raw.json()
+                            if d_raw.get("value") is not None:
+                                self.last_raw_thickness = float(d_raw["value"])
+                                self.last_raw_thickness_ts = int(d_raw.get("ts") or time.time() * 1000)
+                except Exception as e_idle:
+                    logger.debug(f"[SCADA SERVICE] Erro ao obter leitura instantânea em repouso: {e_idle}")
+
+        # Calcula espessura instantânea em tempo real (independente de varredura)
+        instant_reading = self.calcular_leitura_instantanea(
+            self.last_pos_x,
+            self.last_raw_thickness,
+            ts_pos=self.last_pos_x_ts,
+            ts_raw=self.last_raw_thickness_ts,
+            config=config,
+        )
 
         cycle_status = "SCANNING" if self.is_scanning else "IDLE"
         status_res = {
@@ -960,6 +1174,7 @@ class ScadaAcquisitionService:
             "total_in_scan": self._scan_points_count,
             "data_source": config.data_source,
             "last_heartbeat": time.time(),
+            "espessura_atual": instant_reading,
         }
         update_collector_status(status_res)
         return status_res
