@@ -543,8 +543,8 @@ class InstantThicknessReadingTestCase(TestCase):
         self.assertIsNone(res_high["espessura_mm"], "Leitura fora da faixa não pode ser 0.0; deve ser None.")
         self.assertEqual(res_high["status"], "FORA_DA_FAIXA")
 
-    def test_instant_reading_stale_or_incoherent_timestamps(self):
-        """Diferença temporal excessiva entre os sensores identifica amostra incoerente."""
+    def test_instant_reading_stale_or_incoherent_timestamps_during_scan(self):
+        """Diferença temporal excessiva entre os sensores durante varredura ativa identifica amostra incoerente."""
         now_ms = int(time.time() * 1000)
         stale_ts = now_ms - 60000  # 60s atrás (acima do limite padrão de 30s)
 
@@ -554,10 +554,30 @@ class InstantThicknessReadingTestCase(TestCase):
             ts_pos=now_ms,
             ts_raw=stale_ts,
             config=self.config,
+            is_scanning=True,
         )
         self.assertFalse(res["valido"])
         self.assertEqual(res["status"], "AMOSTRA_INCOERENTE")
         self.assertIsNone(res["espessura_mm"])
+
+    def test_instant_reading_stationary_position_preserves_validity(self):
+        """Em repouso (sensor parado), posição antiga não bloqueia medição de espessura atual."""
+        now_ms = int(time.time() * 1000)
+        older_pos_ts = now_ms - 3600000  # Carro parado na posição X há 1 hora
+
+        res = ScadaAcquisitionService.calcular_leitura_instantanea(
+            pos_x=260.0,
+            raw_esp=782.0,
+            ts_pos=older_pos_ts,
+            ts_raw=now_ms,
+            config=self.config,
+            is_scanning=False,
+        )
+        self.assertTrue(res["valido"], "Sensor estacionado deve permanecer válido.")
+        self.assertEqual(res["status"], "VALIDO")
+        self.assertEqual(res["posicao_x"], 260.0)
+        self.assertEqual(res["valor_bruto"], 782.0)
+        self.assertAlmostEqual(res["espessura_mm"], 30.03, places=2)
 
     def test_instant_reading_missing_sensors(self):
         """Sensores desconectados ou ausência de leitura retornam SEM_LEITURA com espessura None."""

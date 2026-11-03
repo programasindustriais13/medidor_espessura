@@ -368,11 +368,19 @@ class ScadaAcquisitionService:
         ts_pos: Optional[int] = None,
         ts_raw: Optional[int] = None,
         config: Optional[SystemConfiguration] = None,
+        is_scanning: bool = False,
     ) -> Dict[str, Any]:
         """
         Calcula a espessura física instantânea (mm) a partir dos sensores de posição e espessura bruta,
         aplicando a calibração multiponto ativa com interpolação linear do zero e fator de conversão.
-        NÃO salva nada no banco de dados e NÃO cria novos ciclos de varredura.
+
+        Regras de validação:
+          - Varredura ativa (is_scanning=True): Carro em movimento transversal, exige sincronismo temporal entre X e Y.
+          - Medição estática / Repouso (is_scanning=False): Carro estacionado. A posição X é a coordenada física atual
+            do sensor (mesmo que comutada há mais tempo). Não bloqueia por defasagem entre X e Y.
+          - Rejeita valores nulos (SEM_LEITURA).
+          - Rejeita posições fora da faixa calibrada física (FORA_DA_FAIXA).
+          - NÃO salva nada no banco de dados e NÃO cria novos ciclos de varredura.
         """
         now_ms = int(time.time() * 1000)
         ref_ts = ts_raw or ts_pos or now_ms
@@ -390,11 +398,11 @@ class ScadaAcquisitionService:
                 "ts": ref_ts,
             }
 
-        # Validação de coerência temporal
-        max_time_diff_ms = getattr(config, "tolerancia_temporal_ms", 500) if config else 500
-        limite_stale_ms = (getattr(config, "limite_stale_segundos", 30) or 30) * 1000 if config else 30000
-
-        if ts_pos is not None and ts_raw is not None:
+        # Validação de coerência temporal:
+        # Durante varredura ativa (carro em movimento), exige sincronismo temporal estrito entre X e Y.
+        if is_scanning and ts_pos is not None and ts_raw is not None:
+            max_time_diff_ms = getattr(config, "tolerancia_temporal_ms", 500) if config else 500
+            limite_stale_ms = (getattr(config, "limite_stale_segundos", 30) or 30) * 1000 if config else 30000
             delta_t = abs(ts_pos - ts_raw)
             if delta_t > limite_stale_ms:
                 return {
@@ -405,7 +413,7 @@ class ScadaAcquisitionService:
                     "zero_interpolado": None,
                     "fator_conversao": None,
                     "status": "AMOSTRA_INCOERENTE",
-                    "motivo": f"Amostras defasadas no tempo ({delta_t}ms > limite {limite_stale_ms}ms).",
+                    "motivo": f"Amostras defasadas no tempo durante varredura ativa ({delta_t}ms > limite {limite_stale_ms}ms).",
                     "ts": ref_ts,
                 }
 
@@ -1163,6 +1171,7 @@ class ScadaAcquisitionService:
             ts_pos=self.last_pos_x_ts,
             ts_raw=self.last_raw_thickness_ts,
             config=config,
+            is_scanning=self.is_scanning,
         )
 
         cycle_status = "SCANNING" if self.is_scanning else "IDLE"
