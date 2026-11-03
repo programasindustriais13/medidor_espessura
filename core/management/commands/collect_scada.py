@@ -32,8 +32,19 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("  COLETOR INDUSTRIAL CANÔNICO - MEDIDOR DE ESPESSURA"))
         self.stdout.write(self.style.SUCCESS("=" * 70))
         self.stdout.write(f"Origem Efetiva: {config.get_data_source_display()} ({config.data_source})")
+        self.stdout.write(f"Modo de Aquisição: {config.get_modo_aquisicao_display()}")
         self.stdout.write(f"Gatilho (Start/Stop): {config.xid_gatilho}")
-        self.stdout.write(f"Medição Dimensional: {config.xid_medicao}")
+        if config.modo_aquisicao == "calibrado":
+            from core.calibration_service import CalibrationService
+            calib = CalibrationService.get_active_calibration()
+            faixa = calib.get_faixa_calibrada() if calib else None
+            calib_str = f"#{calib.id} - {calib.descricao} (Fator: {calib.fator_conversao:.8f}, Faixa: {faixa[0]} a {faixa[1]} mm)" if calib and faixa else "NENHUMA (Alerta: Sem calibração ativa!)"
+            self.stdout.write(f"Posição Sensor X: {config.xid_posicao}")
+            self.stdout.write(f"Bruto Espessura: {config.xid_bruto_espessura}")
+            self.stdout.write(f"Calibração Ativa: {calib_str}")
+            self.stdout.write(f"Tolerância Temporal: {config.tolerancia_temporal_ms} ms")
+        else:
+            self.stdout.write(f"Medição Dimensional (JSON): {config.xid_medicao}")
         self.stdout.write(f"Frequência Polling: {config.intervalo_consulta * 1000:.0f} ms")
         self.stdout.write(f"Sensibilidade Delta X: {config.delta_x_minimo} mm")
         self.stdout.write(self.style.SUCCESS("-" * 70))

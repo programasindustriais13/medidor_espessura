@@ -1,19 +1,262 @@
+from typing import List, Optional, Tuple
+import re
 from django.db import models
 from django.core.exceptions import ValidationError
 from django.conf import settings
+from django.utils import timezone
 
 # Importação dos modelos não-gerenciados do Scada-LTS
 from .models_scada import ScadaDataPoint, ScadaPointValue, ScadaPointValueAnnotation
 
+
+class CalibracaoEspessura(models.Model):
+    """
+    Representa uma calibração dimensional multiponto do sensor de espessura.
+    Garante rastreabilidade metrológica, cálculo dinâmico do fator de conversão
+    e controle estrito de ativação transacional (somente uma ativa por vez).
+    """
+    descricao = models.CharField(max_length=200, verbose_name="Descrição da Calibração")
+    data_calibracao = models.DateTimeField(default=timezone.now, verbose_name="Data da Realização")
+    espessura_bloco_padrao_mm = models.FloatField(default=30.0, verbose_name="Espessura do Bloco Padrão (mm)")
+    ativa = models.BooleanField(default=False, db_index=True, verbose_name="Calibração Ativa")
+    fator_conversao = models.FloatField(null=True, blank=True, verbose_name="Fator de Conversão (mm/unidade)")
+    responsavel = models.CharField(max_length=100, blank=True, default="", verbose_name="Responsável")
+    observacoes = models.TextField(blank=True, default="", verbose_name="Observações")
+    criado_em = models.DateTimeField(auto_now_add=True, verbose_name="Criado em")
+    atualizado_em = models.DateTimeField(auto_now=True, verbose_name="Atualizado em")
+
+    class Meta:
+        verbose_name = "Calibração de Espessura"
+        verbose_name_plural = "Calibrações de Espessura"
+        ordering = ["-ativa", "-data_calibracao"]
+
+    def __str__(self):
+        status = "ATIVA" if self.ativa else "Inativa"
+        fator_str = f"{self.fator_conversao:.8f}" if self.fator_conversao else "N/A"
+        return f"{self.descricao} [{status}] - Fator: {fator_str}"
+
+    def clean(self):
+        super().clean()
+        if self.espessura_bloco_padrao_mm is None or self.espessura_bloco_padrao_mm <= 0:
+            raise ValidationError({"espessura_bloco_padrao_mm": "A espessura do bloco padrão deve ser maior que zero."})
+
+    def calcular_fator_conversao(self, salvar: bool = False) -> Optional[float]:
+        """
+        Calcula dinamicamente o fator de conversão:
+        Fator = espessura_bloco_padrao_mm / media(diferencas_dos_pontos)
+        Exige pelo menos 2 pontos de calibração válidos.
+        """
+        pontos = list(self.pontos.all().order_by("posicao_x"))
+        if len(pontos) < 2:
+            self.fator_conversao = None
+            if salvar and self.pk:
+                super().save(update_fields=["fator_conversao"])
+            return None
+
+        diferencas = [p.diferenca for p in pontos if p.diferenca is not None and p.diferenca > 0]
+        if len(diferencas) != len(pontos):
+            self.fator_conversao = None
+            if salvar and self.pk:
+                super().save(update_fields=["fator_conversao"])
+            return None
+
+        media_dif = sum(diferencas) / len(diferencas)
+        if media_dif <= 0:
+            self.fator_conversao = None
+        else:
+            self.fator_conversao = self.espessura_bloco_padrao_mm / media_dif
+
+        if salvar and self.pk:
+            super().save(update_fields=["fator_conversao"])
+        return self.fator_conversao
+
+    def get_faixa_calibrada(self) -> Optional[Tuple[float, float]]:
+        """Retorna tupla (min_x, max_x) das posições calibradas."""
+        pontos = list(self.pontos.all().order_by("posicao_x"))
+        if len(pontos) < 2:
+            return None
+        return (pontos[0].posicao_x, pontos[-1].posicao_x)
+
+    def is_valid_for_activation(self) -> Tuple[bool, str]:
+        """
+        Verifica se a calibração atende a todos os critérios metrológicos para ser ativada:
+        1. Pelo menos 2 pontos de referência.
+        2. Nenhuma duplicidade de posição X.
+        3. Leituras de bloco estritamente maiores que as do zero em todos os pontos.
+        4. Fator de conversão calculado estritamente positivo.
+        """
+        pontos = list(self.pontos.all().order_by("posicao_x"))
+        if len(pontos) < 2:
+            return False, "A calibração necessita de pelo menos 2 pontos de referência para permitir interpolação linear."
+
+        posicoes = [p.posicao_x for p in pontos]
+        if len(posicoes) != len(set(posicoes)):
+            return False, "Existem pontos com posições X duplicadas nesta calibração."
+
+        for p in pontos:
+            if p.diferenca is None or p.diferenca <= 0:
+                return False, f"O ponto na posição X={p.posicao_x}mm possui leituras inconsistentes (diferença <= 0)."
+
+        fator = self.calcular_fator_conversao()
+        if fator is None or fator <= 0:
+            return False, "Não foi possível calcular um fator de conversão positivo válido."
+
+        return True, "Calibração válida para ativação."
+
+    def ativar(self):
+        """
+        Ativa a calibração de forma atômica e transacional,
+        desativando qualquer calibração anterior.
+        """
+        valida, msg = self.is_valid_for_activation()
+        if not valida:
+            raise ValidationError(msg)
+
+        from django.db import transaction
+        with transaction.atomic():
+            CalibracaoEspessura.objects.filter(ativa=True).exclude(pk=self.pk).update(ativa=False)
+            self.ativa = True
+            self.calcular_fator_conversao()
+            self.save()
+
+
+class PontoCalibracao(models.Model):
+    """
+    Ponto físico de calibração em uma posição X conhecida da base de medição.
+    Armazena múltiplas leituras brutas sem bloco (zero) e com bloco padrão de 30mm,
+    preservando os valores originais e calculando automaticamente as médias e a diferença.
+    """
+    calibracao = models.ForeignKey(
+        CalibracaoEspessura,
+        on_delete=models.CASCADE,
+        related_name="pontos",
+        verbose_name="Calibração",
+    )
+    posicao_x = models.FloatField(verbose_name="Posição X (mm)", db_index=True)
+    leituras_zero_input = models.CharField(
+        max_length=255,
+        verbose_name="Leituras do Zero",
+        help_text="Valores brutos sem bloco separados por vírgula ou espaço (ex: '345, 346' ou '350')",
+    )
+    leituras_bloco_input = models.CharField(
+        max_length=255,
+        verbose_name="Leituras com Bloco",
+        help_text="Valores brutos com bloco padrão separados por vírgula ou espaço (ex: '778, 780' ou '783')",
+    )
+    leituras_zero_list = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name="Lista de Leituras Zero",
+    )
+    leituras_bloco_list = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name="Lista de Leituras Bloco",
+    )
+    zero_medio = models.FloatField(null=True, blank=True, verbose_name="Média do Zero")
+    bloco_medio = models.FloatField(null=True, blank=True, verbose_name="Média com Bloco")
+    diferenca = models.FloatField(null=True, blank=True, verbose_name="Diferença entre Médias")
+
+    class Meta:
+        verbose_name = "Ponto de Calibração"
+        verbose_name_plural = "Pontos de Calibração"
+        ordering = ["calibracao", "posicao_x"]
+        unique_together = [("calibracao", "posicao_x")]
+
+    def __str__(self):
+        return f"X={self.posicao_x}mm | Zero={self.zero_medio} | Bloco={self.bloco_medio} | Dif={self.diferenca}"
+
+    @staticmethod
+    def parse_leituras(texto: str) -> List[float]:
+        """Converte strings com múltiplos números separados por vírgula/espaço em lista de floats."""
+        if not texto:
+            return []
+        tokens = re.split(r"[,;\s]+", texto.strip())
+        vals: List[float] = []
+        for t in tokens:
+            if not t:
+                continue
+            try:
+                val = float(t.replace(",", "."))
+                vals.append(val)
+            except ValueError:
+                pass
+        return vals
+
+    def clean(self):
+        super().clean()
+        if self.posicao_x is None:
+            raise ValidationError({"posicao_x": "A posição X não pode ser vazia."})
+
+        zeros = self.parse_leituras(self.leituras_zero_input)
+        if not zeros:
+            raise ValidationError({"leituras_zero_input": "Informe pelo menos uma leitura bruta para o zero."})
+
+        blocos = self.parse_leituras(self.leituras_bloco_input)
+        if not blocos:
+            raise ValidationError({"leituras_bloco_input": "Informe pelo menos uma leitura bruta com o bloco padrão."})
+
+        self.leituras_zero_list = zeros
+        self.leituras_bloco_list = blocos
+        self.zero_medio = sum(zeros) / len(zeros)
+        self.bloco_medio = sum(blocos) / len(blocos)
+        self.diferenca = self.bloco_medio - self.zero_medio
+
+        if self.diferenca <= 0:
+            raise ValidationError(
+                "A leitura média do bloco padrão deve ser estritamente maior que a leitura média do zero."
+            )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        super().save(*args, **kwargs)
+        if self.calibracao_id:
+            self.calibracao.calcular_fator_conversao(salvar=True)
+
+    def delete(self, *args, **kwargs):
+        calib = self.calibracao
+        super().delete(*args, **kwargs)
+        if calib:
+            calib.calcular_fator_conversao(salvar=True)
+
+
 class LeituraScada(models.Model):
+    STATUS_VALIDADE_CHOICES = (
+        ("VALIDO", "Válido / Calibrado"),
+        ("FORA_DA_FAIXA", "Fora da Faixa Calibrada"),
+        ("SEM_CALIBRACAO", "Sem Calibração Ativa"),
+        ("AMOSTRA_INCOERENTE", "Amostra Incoerente / Desatualizada"),
+        ("ERRO_LEITURA", "Erro de Leitura"),
+    )
+
     # Identificador único do ciclo de escaneamento (ex: timestamp do início)
     scan_id = models.CharField(max_length=50, verbose_name="ID do Ciclo", db_index=True, null=True, blank=True)
     
     xid = models.CharField(max_length=100, verbose_name="Identificador do Ponto")
     eixo_x = models.FloatField(verbose_name="Largura (X)")
-    eixo_y = models.FloatField(verbose_name="Espessura (Y)")
+    eixo_y = models.FloatField(verbose_name="Espessura (Y)", null=True, blank=True)
     data_leitura = models.DateTimeField(verbose_name="Data da Leitura")
     criado_em = models.DateTimeField(auto_now_add=True, verbose_name="Criado em")
+
+    # Campos de Rastreabilidade e Auditoria Metrológica da Calibração
+    valor_bruto = models.FloatField(null=True, blank=True, verbose_name="Valor Bruto Sensor")
+    posicao_bruta = models.FloatField(null=True, blank=True, verbose_name="Posição Bruta X")
+    zero_interpolado = models.FloatField(null=True, blank=True, verbose_name="Zero Interpolado")
+    fator_conversao = models.FloatField(null=True, blank=True, verbose_name="Fator de Conversão Utilizado")
+    calibracao = models.ForeignKey(
+        CalibracaoEspessura,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="leituras",
+        verbose_name="Calibração Utilizada",
+    )
+    status_validade = models.CharField(
+        max_length=30,
+        choices=STATUS_VALIDADE_CHOICES,
+        default="VALIDO",
+        verbose_name="Estado de Validade",
+    )
 
     class Meta:
         verbose_name = "Leitura Scada"
@@ -21,7 +264,7 @@ class LeituraScada(models.Model):
         ordering = ['data_leitura'] # Ordem crescente para desenhar o perfil corretamente
 
     def __str__(self):
-        return f"Scan {self.scan_id} - {self.xid} - {self.data_leitura}"
+        return f"Scan {self.scan_id} - {self.xid} - {self.data_leitura} [{self.status_validade}]"
 
 
 class SystemConfiguration(models.Model):
@@ -52,8 +295,35 @@ class SystemConfiguration(models.Model):
     xid_medicao = models.CharField(
         max_length=50,
         default="DP_747174",
-        verbose_name="XID da Medição Dimensional",
-        help_text="Tag alfanumérica/JSON com coordenadas de espessura [{'x': ..., 'y': ...}]."
+        verbose_name="XID da Medição Dimensional (Legado JSON)",
+        help_text="Tag legada alfanumérica/JSON com coordenadas [{'x': ..., 'y': ...}].",
+    )
+    xid_posicao = models.CharField(
+        max_length=50,
+        default="DP_648291",
+        verbose_name="XID da Posição X",
+        help_text="Tag com a posição física do sensor (DP_648291).",
+    )
+    xid_bruto_espessura = models.CharField(
+        max_length=50,
+        default="DP_632601",
+        verbose_name="XID do Valor Bruto de Espessura",
+        help_text="Tag com a leitura bruta do sensor de espessura (DP_632601).",
+    )
+    modo_aquisicao = models.CharField(
+        max_length=20,
+        choices=(
+            ("calibrado", "Dois Pontos Calibrados (DP_632601 + DP_648291)"),
+            ("legado_json", "Coordenadas Prontas em JSON (DP_747174 - Legado)"),
+        ),
+        default="calibrado",
+        verbose_name="Modo de Aquisição das Coordenadas",
+        help_text="Define se o cálculo de espessura é realizado pelo Django via calibração ativa ou se consome JSON pré-calculado.",
+    )
+    tolerancia_temporal_ms = models.IntegerField(
+        default=500,
+        verbose_name="Tolerância Temporal de Pareamento (ms)",
+        help_text="Diferença temporal máxima aceita entre leitura de posição e leitura de espessura.",
     )
     aquisicao_ativa = models.BooleanField(
         default=True,
@@ -154,6 +424,15 @@ class SystemConfiguration(models.Model):
         if not self.xid_medicao or not self.xid_medicao.strip():
             errors["xid_medicao"] = "O XID da medição não pode ser vazio."
 
+        if not self.xid_posicao or not self.xid_posicao.strip():
+            errors["xid_posicao"] = "O XID da posição não pode ser vazio."
+
+        if not self.xid_bruto_espessura or not self.xid_bruto_espessura.strip():
+            errors["xid_bruto_espessura"] = "O XID do valor bruto de espessura não pode ser vazio."
+
+        if self.tolerancia_temporal_ms is None or self.tolerancia_temporal_ms <= 0:
+            errors["tolerancia_temporal_ms"] = "A tolerância temporal de pareamento deve ser maior que zero."
+
         if self.intervalo_consulta is None or self.intervalo_consulta <= 0:
             errors["intervalo_consulta"] = "O intervalo de consulta deve ser estritamente maior que zero."
 
@@ -217,6 +496,10 @@ class SystemConfiguration(models.Model):
                     "data_source": getattr(settings, "SCADA_DATA_SOURCE", "rest_api"),
                     "xid_gatilho": getattr(settings, "SCADA_XID_GATILHO", "DP_887366"),
                     "xid_medicao": getattr(settings, "SCADA_XID_MEDICAO", "DP_747174"),
+                    "xid_posicao": getattr(settings, "SCADA_XID_POSICAO", "DP_648291"),
+                    "xid_bruto_espessura": getattr(settings, "SCADA_XID_BRUTO_ESPESSURA", "DP_632601"),
+                    "modo_aquisicao": "calibrado",
+                    "tolerancia_temporal_ms": 500,
                     "aquisicao_ativa": True,
                     "intervalo_consulta": 0.05,
                     "limite_stale_segundos": 30,
@@ -241,6 +524,10 @@ class SystemConfiguration(models.Model):
                 data_source=getattr(settings, "SCADA_DATA_SOURCE", "rest_api"),
                 xid_gatilho=getattr(settings, "SCADA_XID_GATILHO", "DP_887366"),
                 xid_medicao=getattr(settings, "SCADA_XID_MEDICAO", "DP_747174"),
+                xid_posicao=getattr(settings, "SCADA_XID_POSICAO", "DP_648291"),
+                xid_bruto_espessura=getattr(settings, "SCADA_XID_BRUTO_ESPESSURA", "DP_632601"),
+                modo_aquisicao="calibrado",
+                tolerancia_temporal_ms=500,
                 aquisicao_ativa=True,
                 intervalo_consulta=0.05,
                 limite_stale_segundos=30,

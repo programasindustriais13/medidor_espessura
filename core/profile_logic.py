@@ -36,7 +36,17 @@ class ProfileLogic:
         """
         Valida o ponto comparando-o com o nível mais próximo (Borda ou Centro).
         O 'Limites' retornados serão os do nível identificado.
+        Trata valores None (amostras fora da faixa calibrada ou não calculadas).
         """
+        if y is None:
+            return {
+                'is_ok': False,
+                'alvo': 0.0,
+                'lim_min': 0.0,
+                'lim_max': 0.0,
+                'zona': 'Não Calibrado / Fora da Faixa'
+            }
+
         specs = cls.get_specs(esp_borda, centro, tol)
         
         # Identificar qual nível o ponto Y está mais próximo

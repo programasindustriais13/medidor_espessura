@@ -369,6 +369,103 @@ class ScadaRepository:
 
         return readings, new_last_id, new_last_ts
 
+    def get_incremental_readings_multi(
+        self,
+        xids: List[str],
+        last_id: Optional[int] = None,
+        last_ts: Optional[int] = None,
+        limit: int = 1000,
+        max_ts: Optional[int] = None,
+    ) -> Tuple[List[Dict[str, Any]], Optional[int], Optional[int]]:
+        """
+        Consumo incremental de medições para múltiplos XIDs em uma única query indexada.
+        Garante ordem cronológica rigorosa (ts ASC, id ASC) e retorno dos metadados de cada ponto.
+        """
+        resolved = self.resolve_xids(xids)
+        if not resolved:
+            return [], last_id, last_ts
+
+        dp_id_to_xid = {meta["id"]: xid for xid, meta in resolved.items()}
+        dp_ids = list(dp_id_to_xid.keys())
+        if not dp_ids:
+            return [], last_id, last_ts
+
+        dp_placeholders = ", ".join(["%s"] * len(dp_ids))
+        params: List[Any] = list(dp_ids)
+        where_clause = f"pv.dataPointId IN ({dp_placeholders})"
+
+        if last_ts is not None and last_id is not None:
+            where_clause += " AND (pv.ts > %s OR (pv.ts = %s AND pv.id > %s))"
+            params.extend([last_ts, last_ts, last_id])
+        elif last_id is not None:
+            where_clause += " AND pv.id > %s"
+            params.append(last_id)
+        elif last_ts is not None:
+            where_clause += " AND pv.ts > %s"
+            params.append(last_ts)
+
+        if max_ts is not None:
+            where_clause += " AND pv.ts <= %s"
+            params.append(int(max_ts))
+
+        params.append(int(limit))
+
+        sql = f"""
+            SELECT 
+                pv.id AS pv_id,
+                pv.dataPointId,
+                pv.dataType,
+                pv.pointValue,
+                pv.ts,
+                pva.textPointValueShort,
+                pva.textPointValueLong
+            FROM pointvalues pv
+            LEFT JOIN pointvalueannotations pva ON pva.pointValueId = pv.id
+            WHERE {where_clause}
+            ORDER BY pv.ts ASC, pv.id ASC
+            LIMIT %s;
+        """
+
+        readings: List[Dict[str, Any]] = []
+        new_last_id = last_id
+        new_last_ts = last_ts
+
+        try:
+            with connections["scada"].cursor() as cursor:
+                cursor.execute(sql, params)
+                rows = cursor.fetchall()
+
+                for row in rows:
+                    pv_id, dp_id, dt, raw_val, ts, short_txt, long_txt = row
+                    xid = dp_id_to_xid.get(dp_id)
+                    if not xid:
+                        continue
+                    norm_val, str_val = self.normalize_value(dt, raw_val, short_txt, long_txt)
+                    dt_aware = self.ts_to_datetime(ts)
+
+                    readings.append({
+                        "xid": xid,
+                        "data_point_id": dp_id,
+                        "point_value_id": pv_id,
+                        "data_type": dt,
+                        "value": norm_val,
+                        "str_value": str_val,
+                        "ts": ts,
+                        "datetime": dt_aware,
+                    })
+
+                    new_last_id = pv_id
+                    new_last_ts = ts
+
+        except OperationalError as oe:
+            logger.error(f"[SCADA REPO] OperationalError em get_incremental_readings_multi para {xids}: {oe}")
+            raise
+        except Exception as e:
+            logger.error(f"[SCADA REPO] Erro em get_incremental_readings_multi: {e}")
+            raise
+
+        return readings, new_last_id, new_last_ts
+
     def diagnosticar_xid(self, xid: str, stale_limit_seconds: int = 30) -> Dict[str, Any]:
         """
         Diagnostica um Data Point individual sem efetuar nenhuma escrita no Scada.

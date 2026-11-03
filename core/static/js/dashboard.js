@@ -737,6 +737,14 @@ document.addEventListener('DOMContentLoaded', function () {
 
                 updateDimensionalUI(dim, isScanning);
 
+                // Atualiza pill da calibração ativa se presente
+                if (json.calibracao && json.calibracao.descricao) {
+                    const calibPill = document.getElementById('calib-desc-pill');
+                    if (calibPill) {
+                        calibPill.textContent = `Calibração: ${json.calibracao.descricao}`;
+                    }
+                }
+
                 let mat = json.material;
                 if (mat && mat.largura !== null && mat.largura !== undefined) {
                     const formattedWidth = `${mat.largura.toFixed(1)} mm`;

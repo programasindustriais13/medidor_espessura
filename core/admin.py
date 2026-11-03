@@ -10,10 +10,209 @@ from .models import (
     SystemConfiguration,
     ResultadoDimensionalScan,
     ScadaDataPoint,
+    CalibracaoEspessura,
+    PontoCalibracao,
 )
+from .calibration_service import CalibrationService
 from .scada_repository import ScadaRepository
 
 logger = logging.getLogger(__name__)
+
+
+class PontoCalibracaoInline(admin.TabularInline):
+    """
+    Tabela inline para cadastro de pontos físicos de calibração.
+    Permite registrar múltiplas leituras separadas por vírgula ou espaço
+    e calcula automaticamente as médias e a diferença.
+    """
+    model = PontoCalibracao
+    extra = 1
+    fields = (
+        "posicao_x",
+        "leituras_zero_input",
+        "leituras_bloco_input",
+        "format_zero_medio",
+        "format_bloco_medio",
+        "format_diferenca",
+    )
+    readonly_fields = (
+        "format_zero_medio",
+        "format_bloco_medio",
+        "format_diferenca",
+    )
+
+    def format_zero_medio(self, obj):
+        return f"{obj.zero_medio:.2f}" if obj.zero_medio is not None else "--"
+    format_zero_medio.short_description = "Zero Médio"
+
+    def format_bloco_medio(self, obj):
+        return f"{obj.bloco_medio:.2f}" if obj.bloco_medio is not None else "--"
+    format_bloco_medio.short_description = "Bloco Médio"
+
+    def format_diferenca(self, obj):
+        if obj.diferenca is not None:
+            cor = "#16a34a" if obj.diferenca > 0 else "#dc2626"
+            return format_html(f'<strong style="color: {cor};">{obj.diferenca:.2f}</strong>')
+        return "--"
+    format_diferenca.short_description = "Diferença (Δ)"
+
+
+@admin.register(CalibracaoEspessura)
+class CalibracaoEspessuraAdmin(admin.ModelAdmin):
+    """
+    Interface administrativa para gerenciamento das calibrações multiponto.
+    Garante controle transacional de ativação, validação de regras físicas
+    e histórico completo de calibrações.
+    """
+    list_display = (
+        "id",
+        "descricao",
+        "status_badge",
+        "espessura_bloco_padrao_mm",
+        "format_fator_conversao",
+        "format_faixa_calibrada",
+        "pontos_count",
+        "responsavel",
+        "data_calibracao",
+        "ativar_link",
+    )
+    list_filter = ("ativa", "data_calibracao")
+    search_fields = ("descricao", "responsavel", "observacoes")
+    ordering = ("-ativa", "-data_calibracao")
+    inlines = [PontoCalibracaoInline]
+    actions = ["acao_ativar_calibracao"]
+
+    fieldsets = (
+        (
+            "Identificação da Calibração",
+            {
+                "fields": (
+                    "descricao",
+                    "data_calibracao",
+                    "responsavel",
+                    "espessura_bloco_padrao_mm",
+                    "ativa",
+                ),
+                "description": (
+                    "Cadastre a calibração com a espessura conhecida do bloco padrão (nominal 30,00 mm). "
+                    "Apenas uma calibração pode estar ativa no sistema."
+                ),
+            },
+        ),
+        (
+            "Resultados Metrológicos Calculados",
+            {
+                "fields": (
+                    "fator_conversao",
+                    "faixa_calibrada_display",
+                    "validade_display",
+                ),
+                "description": "Valores derivados automaticamente a partir dos pontos de referência cadastrados abaixo.",
+            },
+        ),
+        (
+            "Observações e Auditoria",
+            {
+                "fields": ("observacoes", "criado_em", "atualizado_em"),
+            },
+        ),
+    )
+
+    readonly_fields = (
+        "fator_conversao",
+        "faixa_calibrada_display",
+        "validade_display",
+        "criado_em",
+        "atualizado_em",
+    )
+
+    def status_badge(self, obj):
+        if obj.ativa:
+            return format_html(
+                '<span style="background-color: #16a34a; color: white; padding: 3px 8px; border-radius: 4px; font-weight: 700; font-size: 0.8rem;">● ATIVA</span>'
+            )
+        return format_html(
+            '<span style="background-color: #64748b; color: white; padding: 3px 8px; border-radius: 4px; font-weight: 600; font-size: 0.8rem;">Inativa</span>'
+        )
+    status_badge.short_description = "Status"
+
+    def format_fator_conversao(self, obj):
+        if obj.fator_conversao:
+            return f"{obj.fator_conversao:.8f} mm/un"
+        return "--"
+    format_fator_conversao.short_description = "Fator de Conversão"
+
+    def format_faixa_calibrada(self, obj):
+        faixa = obj.get_faixa_calibrada()
+        if faixa:
+            return f"{faixa[0]:.1f} a {faixa[1]:.1f} mm"
+        return "Sem pontos sufic."
+    format_faixa_calibrada.short_description = "Faixa Calibrada (X)"
+
+    def faixa_calibrada_display(self, obj):
+        faixa = obj.get_faixa_calibrada()
+        if faixa:
+            return format_html(
+                f'<strong style="color: #0284c7; font-size: 1.05rem;">{faixa[0]:.1f} mm a {faixa[1]:.1f} mm</strong> '
+                f'(Extrapolações fora desta faixa física serão rejeitadas)'
+            )
+        return "Cadastre pelo menos 2 pontos para definir a faixa calibrada."
+    faixa_calibrada_display.short_description = "Faixa Física Calibrada"
+
+    def validade_display(self, obj):
+        valida, msg = obj.is_valid_for_activation()
+        cor = "#16a34a" if valida else "#dc2626"
+        icon = "✅" if valida else "⚠️"
+        return format_html(f'<span style="color: {cor}; font-weight: bold;">{icon} {msg}</span>')
+    validade_display.short_description = "Diagnóstico de Validade"
+
+    def pontos_count(self, obj):
+        return obj.pontos.count()
+    pontos_count.short_description = "Pontos"
+
+    def ativar_link(self, obj):
+        if obj.ativa:
+            return format_html('<span style="color: #16a34a; font-weight: bold;">Já Ativa</span>')
+        return format_html(
+            '<a class="button" href="ativar/{}/" style="background: #16a34a; color: white; padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; text-decoration: none; font-weight: bold;">⚡ Ativar</a>',
+            obj.pk,
+        )
+    ativar_link.short_description = "Ação"
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom_urls = [
+            path(
+                "ativar/<int:calibracao_id>/",
+                self.admin_site.admin_view(self.ativar_calibracao_view),
+                name="core_calibracao_ativar",
+            ),
+        ]
+        return custom_urls + urls
+
+    def ativar_calibracao_view(self, request, calibracao_id):
+        from django.contrib import messages
+        from django.http import HttpResponseRedirect
+        try:
+            calib = CalibrationService.ativar_calibracao(calibracao_id)
+            messages.success(request, f"Calibração '{calib.descricao}' ativada com sucesso.")
+        except Exception as e:
+            messages.error(request, f"Falha ao ativar calibração: {e}")
+        return HttpResponseRedirect("../../")
+
+    def acao_ativar_calibracao(self, request, queryset):
+        from django.contrib import messages
+        if queryset.count() != 1:
+            messages.error(request, "Selecione exatamente uma calibração para ativar.")
+            return
+
+        calib = queryset.first()
+        try:
+            CalibrationService.ativar_calibracao(calib.pk)
+            messages.success(request, f"Calibração '{calib.descricao}' ativada com sucesso.")
+        except Exception as e:
+            messages.error(request, f"Falha ao ativar calibração: {e}")
+    acao_ativar_calibracao.short_description = "⚡ Ativar Calibração Selecionada"
 
 
 @admin.register(LeituraScada)
@@ -24,13 +223,15 @@ class LeituraScadaAdmin(admin.ModelAdmin):
     """
     list_display = (
         "scan_id",
-        "xid",
+        "status_badge",
         "format_eixo_x",
         "format_eixo_y",
+        "format_valor_bruto",
+        "format_zero_interpolado",
+        "calibracao_link",
         "data_leitura",
-        "criado_em",
     )
-    list_filter = ("scan_id", "data_leitura")
+    list_filter = ("status_validade", "scan_id", "data_leitura", "calibracao")
     search_fields = ("scan_id", "xid")
     date_hierarchy = "data_leitura"
     ordering = ("-data_leitura",)
@@ -41,17 +242,55 @@ class LeituraScadaAdmin(admin.ModelAdmin):
         "xid",
         "eixo_x",
         "eixo_y",
+        "valor_bruto",
+        "posicao_bruta",
+        "zero_interpolado",
+        "fator_conversao",
+        "calibracao",
+        "status_validade",
         "data_leitura",
         "criado_em",
     )
+
+    def status_badge(self, obj):
+        cores = {
+            "VALIDO": "#16a34a",
+            "FORA_DA_FAIXA": "#d97706",
+            "SEM_CALIBRACAO": "#dc2626",
+            "AMOSTRA_INCOERENTE": "#9333ea",
+            "ERRO_LEITURA": "#dc2626",
+        }
+        cor = cores.get(obj.status_validade, "#64748b")
+        return format_html(
+            '<span style="background-color: {}; color: white; padding: 2px 7px; border-radius: 4px; font-weight: 600; font-size: 0.75rem;">{}</span>',
+            cor,
+            obj.get_status_validade_display(),
+        )
+    status_badge.short_description = "Validade"
 
     def format_eixo_x(self, obj):
         return f"{obj.eixo_x:.2f} mm"
     format_eixo_x.short_description = "Posição X"
 
     def format_eixo_y(self, obj):
-        return f"{obj.eixo_y:.3f} mm"
+        if obj.eixo_y is not None:
+            return f"{obj.eixo_y:.3f} mm"
+        return format_html('<span style="color: #94a3b8; font-style: italic;">N/A</span>')
     format_eixo_y.short_description = "Espessura Y"
+
+    def format_valor_bruto(self, obj):
+        return f"{obj.valor_bruto:.1f}" if obj.valor_bruto is not None else "--"
+    format_valor_bruto.short_description = "Bruto"
+
+    def format_zero_interpolado(self, obj):
+        return f"{obj.zero_interpolado:.2f}" if obj.zero_interpolado is not None else "--"
+    format_zero_interpolado.short_description = "Zero (Interp.)"
+
+    def calibracao_link(self, obj):
+        if obj.calibracao:
+            return f"Calib #{obj.calibracao_id}"
+        return "--"
+    calibracao_link.short_description = "Calibração"
 
     def has_add_permission(self, request):
         return False
@@ -157,8 +396,12 @@ class SystemConfigurationAdmin(admin.ModelAdmin):
             {
                 "fields": (
                     "data_source",
+                    "modo_aquisicao",
                     "xid_gatilho",
+                    "xid_posicao",
+                    "xid_bruto_espessura",
                     "xid_medicao",
+                    "tolerancia_temporal_ms",
                     "aquisicao_ativa",
                     "intervalo_consulta",
                     "limite_stale_segundos",
@@ -166,8 +409,8 @@ class SystemConfigurationAdmin(admin.ModelAdmin):
                     "tamanho_lote_incremental",
                 ),
                 "description": (
-                    "Configurações do protocolo e comportamento do coletor. "
-                    "A alteração da origem (MySQL ou REST) aplica-se em tempo real sem interrupção."
+                    "Configurações do protocolo e comportamento do coletor industrial. "
+                    "O modo 'calibrado' utiliza DP_632601 (bruto) e DP_648291 (posição X) com a calibração multiponto ativa."
                 ),
             },
         ),

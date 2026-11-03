@@ -200,6 +200,15 @@ class ScadaAcquisitionService:
         self.last_reading_id: Optional[int] = None
         self.last_reading_ts: Optional[int] = None
 
+        # Rastreamento de Pareamento para Calibração Multiponto (DP_648291 + DP_632601)
+        self.last_raw_thickness: Optional[float] = None
+        self.last_raw_thickness_ts: Optional[int] = None
+        self.last_raw_thickness_dt: Optional[datetime] = None
+        self.last_pos_x: Optional[float] = None
+        self.last_pos_x_ts: Optional[int] = None
+        self.last_pos_x_dt: Optional[datetime] = None
+        self.trigger_start_ts: Optional[int] = None
+
         # Histórico recente do gatilho (para sincronização e desempate temporal)
         self._last_trigger_info: Optional[Dict[str, Any]] = None
         self._consecutive_comm_errors: int = 0
@@ -351,12 +360,278 @@ class ScadaAcquisitionService:
 
         return coords
 
+    def _collect_calibrated_rest(self, config: SystemConfiguration) -> int:
+        """
+        Coleta medições calibradas via REST API a partir de dois Data Points independentes:
+          - config.xid_posicao (DP_648291): Posição física X
+          - config.xid_bruto_espessura (DP_632601): Valor bruto do sensor de espessura
+        """
+        base_url = getattr(settings, "SCADA_REST_BASE_URL", "http://192.168.0.202:8080/Scada-LTS")
+        user = getattr(settings, "SCADA_REST_USERNAME", "teste")
+        pswd = getattr(settings, "SCADA_REST_PASSWORD", "teste1")
+
+        url_pos = f"{base_url}/api/point_value/getValue/{config.xid_posicao}"
+        url_raw = f"{base_url}/api/point_value/getValue/{config.xid_bruto_espessura}"
+
+        try:
+            resp_pos = self.http_session.get(url_pos, timeout=2)
+            if resp_pos.status_code != 200 or "login.htm" in resp_pos.url:
+                if not self._ensure_rest_login(base_url, user, pswd):
+                    return 0
+                resp_pos = self.http_session.get(url_pos, timeout=2)
+                if resp_pos.status_code != 200:
+                    return 0
+
+            resp_raw = self.http_session.get(url_raw, timeout=2)
+            if resp_raw.status_code != 200:
+                return 0
+
+            data_pos = resp_pos.json()
+            data_raw = resp_raw.json()
+
+            val_pos_raw = data_pos.get("value")
+            val_raw_raw = data_raw.get("value")
+
+            if val_pos_raw is None or val_raw_raw is None:
+                return 0
+
+            try:
+                pos_x = float(val_pos_raw)
+                raw_esp = float(val_raw_raw)
+            except (ValueError, TypeError):
+                return 0
+
+            ts_pos = int(data_pos.get("ts") or time.time() * 1000)
+            ts_raw = int(data_raw.get("ts") or time.time() * 1000)
+            dt_aware = self.repo.ts_to_datetime(ts_pos)
+
+            max_time_diff_ms = getattr(config, "tolerancia_temporal_ms", 500)
+            limite_stale_ms = getattr(config, "limite_stale_segundos", 30) * 1000
+
+            # Filtro espacial em X (ruído de encoder)
+            is_first = (self.last_valid_x == -999.0)
+            x_constant = (abs(pos_x - self.last_valid_x) < 0.0001)
+            x_displaced = (abs(pos_x - self.last_valid_x) >= config.delta_x_minimo)
+
+            if not (is_first or x_constant or x_displaced):
+                return 0
+
+            # Coerência temporal entre as duas amostras
+            delta_t = abs(ts_pos - ts_raw)
+            cycle_ref_ts = (self.trigger_start_ts or ts_pos) - max_time_diff_ms
+            is_coherent = (delta_t <= max_time_diff_ms) or (
+                ts_raw >= cycle_ref_ts and delta_t <= limite_stale_ms
+            )
+
+            coord_key = (ts_pos, round(pos_x, 3), round(raw_esp, 3))
+            if coord_key in self._seen_points_in_scan:
+                return 0
+            self._seen_points_in_scan.add(coord_key)
+
+            from .calibration_service import CalibrationService
+            active_cal = CalibrationService.get_active_calibration()
+
+            eixo_y = None
+            zero_interp = None
+            fator = None
+            calib_obj = active_cal
+            status_validade = "AMOSTRA_INCOERENTE"
+
+            if is_coherent:
+                calc = CalibrationService.calcular_espessura(pos_x, raw_esp, calibracao=active_cal)
+                if calc["valido"]:
+                    eixo_y = calc["espessura_mm"]
+                    zero_interp = calc["zero_interpolado"]
+                    fator = calc["fator_conversao"]
+                    status_validade = "VALIDO"
+                else:
+                    eixo_y = None
+                    zero_interp = calc.get("zero_interpolado")
+                    fator = calc.get("fator_conversao")
+                    status_validade = calc["status"]
+
+            rec = LeituraScada(
+                scan_id=self.current_scan_id,
+                xid=config.xid_posicao,
+                eixo_x=pos_x,
+                eixo_y=eixo_y,
+                data_leitura=dt_aware,
+                valor_bruto=raw_esp,
+                posicao_bruta=pos_x,
+                zero_interpolado=zero_interp,
+                fator_conversao=fator,
+                calibracao=calib_obj,
+                status_validade=status_validade,
+            )
+            rec.save()
+
+            self.last_valid_x = pos_x
+            if eixo_y is not None:
+                self.last_valid_y = eixo_y
+            self._scan_points_count += 1
+            return 1
+
+        except Exception as e:
+            logger.warning(f"[SCADA REST] Erro ao coletar medição calibrada: {e}")
+            return 0
+
+    def _collect_calibrated_mysql(
+        self,
+        config: SystemConfiguration,
+        max_ts: Optional[int] = None,
+    ) -> int:
+        """
+        Coleta medições industriais a partir de dois Data Points independentes:
+          - config.xid_posicao (DP_648291): Coordenada X da posição do sensor
+          - config.xid_bruto_espessura (DP_632601): Leitura bruta do sensor de espessura
+        
+        Aplica pareamento com tolerância temporal, interpolação linear do zero
+        em função da posição X, rejeição de extrapolações fora da faixa física
+        e gravação das coordenadas metrológicas (X, Y).
+        """
+        xids = [config.xid_posicao, config.xid_bruto_espessura]
+        try:
+            readings, new_last_id, new_last_ts = self.repo.get_incremental_readings_multi(
+                xids=xids,
+                last_id=self.last_reading_id,
+                last_ts=self.last_reading_ts,
+                limit=config.tamanho_lote_incremental,
+                max_ts=max_ts,
+            )
+
+            if not readings:
+                return 0
+
+            from .calibration_service import CalibrationService
+            active_cal = CalibrationService.get_active_calibration()
+
+            saved_count = 0
+            records_to_create = []
+            max_time_diff_ms = getattr(config, "tolerancia_temporal_ms", 500)
+            limite_stale_ms = getattr(config, "limite_stale_segundos", 30) * 1000
+
+            for sample in readings:
+                xid = sample["xid"]
+                val = sample["value"]
+                ts_ms = int(sample["ts"])
+                dt_aware = sample["datetime"]
+
+                if xid == config.xid_bruto_espessura:
+                    try:
+                        self.last_raw_thickness = float(val)
+                        self.last_raw_thickness_ts = ts_ms
+                        self.last_raw_thickness_dt = dt_aware
+                    except (ValueError, TypeError):
+                        pass
+
+                elif xid == config.xid_posicao:
+                    try:
+                        pos_x = float(val)
+                    except (ValueError, TypeError):
+                        continue
+
+                    # Filtro espacial em X (ruído de encoder)
+                    is_first = (self.last_valid_x == -999.0)
+                    x_constant = (abs(pos_x - self.last_valid_x) < 0.0001)
+                    x_displaced = (abs(pos_x - self.last_valid_x) >= config.delta_x_minimo)
+
+                    if not (is_first or x_constant or x_displaced):
+                        continue
+
+                    # Pareamento temporal com leitura bruta de espessura
+                    if self.last_raw_thickness is None or self.last_raw_thickness_ts is None:
+                        # Tenta obter último valor do Scada caso não haja leitura no batch atual
+                        last_raw_info = self.repo.get_last_value(config.xid_bruto_espessura)
+                        if last_raw_info and last_raw_info.get("value") is not None:
+                            try:
+                                self.last_raw_thickness = float(last_raw_info["value"])
+                                self.last_raw_thickness_ts = int(last_raw_info["ts"])
+                                self.last_raw_thickness_dt = last_raw_info["datetime"]
+                            except (ValueError, TypeError):
+                                pass
+
+                    is_coherent = False
+                    if self.last_raw_thickness is not None and self.last_raw_thickness_ts is not None:
+                        delta_t = abs(ts_ms - self.last_raw_thickness_ts)
+                        cycle_ref_ts = (self.trigger_start_ts or ts_ms) - max_time_diff_ms
+                        if delta_t <= max_time_diff_ms or (
+                            self.last_raw_thickness_ts >= cycle_ref_ts and delta_t <= limite_stale_ms
+                        ):
+                            is_coherent = True
+
+                    # Deduplicação
+                    coord_key = (ts_ms, round(pos_x, 3), round(self.last_raw_thickness or 0.0, 3))
+                    if coord_key in self._seen_points_in_scan:
+                        continue
+                    self._seen_points_in_scan.add(coord_key)
+
+                    eixo_y = None
+                    zero_interp = None
+                    fator = None
+                    calib_obj = active_cal
+                    status_validade = "AMOSTRA_INCOERENTE"
+
+                    if is_coherent and self.last_raw_thickness is not None:
+                        calc = CalibrationService.calcular_espessura(
+                            pos_x, self.last_raw_thickness, calibracao=active_cal
+                        )
+                        if calc["valido"]:
+                            eixo_y = calc["espessura_mm"]
+                            zero_interp = calc["zero_interpolado"]
+                            fator = calc["fator_conversao"]
+                            status_validade = "VALIDO"
+                        else:
+                            # Fora da faixa física ou sem calibração ativa:
+                            # REGRA INDUSTRIAL: NÃO SALVAR VALOR ARTIFICIAL ZERO
+                            eixo_y = None
+                            zero_interp = calc.get("zero_interpolado")
+                            fator = calc.get("fator_conversao")
+                            status_validade = calc["status"]
+
+                    records_to_create.append(
+                        LeituraScada(
+                            scan_id=self.current_scan_id,
+                            xid=config.xid_posicao,
+                            eixo_x=pos_x,
+                            eixo_y=eixo_y,
+                            data_leitura=dt_aware,
+                            valor_bruto=self.last_raw_thickness,
+                            posicao_bruta=pos_x,
+                            zero_interpolado=zero_interp,
+                            fator_conversao=fator,
+                            calibracao=calib_obj,
+                            status_validade=status_validade,
+                        )
+                    )
+                    self.last_valid_x = pos_x
+                    if eixo_y is not None:
+                        self.last_valid_y = eixo_y
+                    saved_count += 1
+
+            if records_to_create:
+                LeituraScada.objects.bulk_create(records_to_create)
+
+            self.last_reading_id = new_last_id
+            self.last_reading_ts = new_last_ts
+            self._scan_points_count += saved_count
+            return saved_count
+
+        except OperationalError as oe:
+            logger.error(f"[SCADA MYSQL] Erro operacional ao coletar medições calibradas: {oe}")
+            return 0
+        except Exception as e:
+            logger.error(f"[SCADA MYSQL] Erro inesperado ao coletar medições calibradas: {e}")
+            return 0
+
     def _collect_measurements_rest(self, config: SystemConfiguration) -> int:
         """
         Coleta medição via REST e persiste no banco default.
         Aplica deduplicação por identificador/timestamp e conteúdo para evitar
         gravação redundante decorrente da taxa de polling.
         """
+        if getattr(config, "modo_aquisicao", "calibrado") == "calibrado":
+            return self._collect_calibrated_rest(config)
+
         base_url = getattr(settings, "SCADA_REST_BASE_URL", "http://192.168.0.202:8080/Scada-LTS")
         url_valor = f"{base_url}/api/point_value/getValue/{config.xid_medicao}"
 
@@ -425,6 +700,9 @@ class ScadaAcquisitionService:
         Deduplica amostras gêmeas geradas pelo Scada no mesmo ts com mesmo conteúdo.
         Preserva integralmente variações de espessura Y mesmo com X constante.
         """
+        if getattr(config, "modo_aquisicao", "calibrado") == "calibrado":
+            return self._collect_calibrated_mysql(config, max_ts=max_ts)
+
         try:
             readings, new_last_id, new_last_ts = self.repo.get_incremental_readings(
                 xid=config.xid_medicao,
@@ -567,6 +845,11 @@ class ScadaAcquisitionService:
                 self.last_valid_y = -999.0
                 self._seen_points_in_scan.clear()
                 self._scan_points_count = 0
+                self.trigger_start_ts = trigger_ts
+                self.last_raw_thickness = None
+                self.last_raw_thickness_ts = None
+                self.last_pos_x = None
+                self.last_pos_x_ts = None
 
                 # Inicializa cursor a partir do carimbo do gatilho
                 if config.data_source == "mysql":
@@ -588,6 +871,11 @@ class ScadaAcquisitionService:
             self.last_valid_y = -999.0
             self._seen_points_in_scan.clear()
             self._scan_points_count = 0
+            self.trigger_start_ts = trigger_ts
+            self.last_raw_thickness = None
+            self.last_raw_thickness_ts = None
+            self.last_pos_x = None
+            self.last_pos_x_ts = None
 
             # Inicializa cursor no exato timestamp de início do ciclo
             # (id=0 garante que medições com ts == trigger_ts sejam lidas sem perda)
@@ -650,6 +938,11 @@ class ScadaAcquisitionService:
             self._seen_points_in_scan.clear()
             self.last_reading_id = None
             self.last_reading_ts = None
+            self.trigger_start_ts = None
+            self.last_raw_thickness = None
+            self.last_raw_thickness_ts = None
+            self.last_pos_x = None
+            self.last_pos_x_ts = None
 
         # ── Varredura Ativa (Nível Alto) ───────────────────────────────────
         if self.is_scanning:

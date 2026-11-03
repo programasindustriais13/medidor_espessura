@@ -2,18 +2,23 @@ import csv
 from django.shortcuts import render
 from django.http import JsonResponse, HttpResponse
 from django.utils import timezone
-from .models import LeituraScada, SystemConfiguration
+from .models import LeituraScada, SystemConfiguration, CalibracaoEspessura
 from django.db.models import Max
 from .profile_logic import ProfileLogic
 from .dimensional_analysis import DimensionalAnalyzer
 from .scada_service import get_collector_status
+from .calibration_service import CalibrationService
 
 def dashboard(request):
     """
-    Renderiza a interface principal do medidor.
+    Renderiza a interface principal do medidor com diagnóstico da calibração ativa.
     """
     config = SystemConfiguration.get_config()
-    return render(request, 'core/dashboard.html', {'config': config})
+    calib = CalibrationService.get_active_calibration()
+    return render(request, 'core/dashboard.html', {
+        'config': config,
+        'calibracao_ativa': calib,
+    })
 
 
 def listar_scans(request):
@@ -98,6 +103,9 @@ def api_dados_scada(request):
     # Buscar dados ordenados por Data Leitura (para manter ordem cronológica de varredura)
     leituras = LeituraScada.objects.filter(scan_id=scan_id).order_by('data_leitura')
     
+    calib = CalibrationService.get_active_calibration()
+    faixa_calib = calib.get_faixa_calibrada() if calib else None
+
     data = []
     for l in leituras:
         validacao = ProfileLogic.validar_ponto(
@@ -113,6 +121,9 @@ def api_dados_scada(request):
             'max': validacao['lim_max'],
             'is_ok': validacao['is_ok'],
             'zona': validacao['zona'],
+            'status_validade': getattr(l, 'status_validade', 'VALIDO'),
+            'valor_bruto': l.valor_bruto,
+            'zero_interpolado': l.zero_interpolado,
             'ts': l.data_leitura.strftime('%H:%M:%S')
         })
     
@@ -133,14 +144,21 @@ def api_dados_scada(request):
         'count': len(data),
         'data': data,
         'material': info_material,
-        'dimensoes': dimensoes
+        'dimensoes': dimensoes,
+        'calibracao': {
+            'id': calib.id if calib else None,
+            'descricao': calib.descricao if calib else "Sem calibração ativa",
+            'ativa': calib.ativa if calib else False,
+            'fator_conversao': calib.fator_conversao if calib else None,
+            'faixa_x': [faixa_calib[0], faixa_calib[1]] if faixa_calib else None,
+        }
     })
 
 
 def exportar_csv(request):
     """
     Gera relatório CSV ajustado conforme regras industriais.
-    Inclui cabeçalho dimensional se gerado a partir de um scan_id individual.
+    Inclui cabeçalho dimensional e dados de calibração metrológica.
     """
     scan_id = request.GET.get('scan_id')
     config = SystemConfiguration.get_config()
@@ -183,7 +201,11 @@ def exportar_csv(request):
         'X (mm)', 
         'Y (mm)', 
         'Status', 
-        'Zona'
+        'Zona',
+        'Valor Bruto',
+        'Zero Interp',
+        'Fator Conv',
+        'Validade',
     ])
 
     for l in leituras:
@@ -192,13 +214,22 @@ def exportar_csv(request):
             esp_borda=p_esp_borda, centro=p_centro, tol=p_tol
         )
         status_str = "OK" if res['is_ok'] else "NOK"
+        y_str = str(round(l.eixo_y, 3)).replace('.', ',') if l.eixo_y is not None else "N/A"
+        raw_str = str(round(l.valor_bruto, 2)).replace('.', ',') if l.valor_bruto is not None else ""
+        zero_str = str(round(l.zero_interpolado, 2)).replace('.', ',') if l.zero_interpolado is not None else ""
+        fator_str = f"{l.fator_conversao:.8f}".replace('.', ',') if l.fator_conversao is not None else ""
+        val_str = getattr(l, 'status_validade', 'VALIDO')
         
         writer.writerow([
             l.scan_id,
             str(l.eixo_x).replace('.', ','),
-            str(l.eixo_y).replace('.', ','),
+            y_str,
             status_str,
-            res['zona']
+            res['zona'],
+            raw_str,
+            zero_str,
+            fator_str,
+            val_str,
         ])
 
     return response

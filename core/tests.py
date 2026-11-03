@@ -213,6 +213,8 @@ class ScadaAcquisitionMachineTestCase(TestCase):
     def setUp(self):
         self.service = ScadaAcquisitionService(override_source="rest_api")
         self.config = SystemConfiguration.get_config()
+        self.config.modo_aquisicao = "legado_json"
+        self.config.save()
 
     def test_parse_coordinate_payload(self):
         # Array JSON
@@ -531,6 +533,7 @@ class ControlledImplementationScenariosTestCase(TestCase):
         self.config = SystemConfiguration.get_config()
         self.config.data_source = "mysql"
         self.config.delta_x_minimo = 0.1
+        self.config.modo_aquisicao = "legado_json"
         self.config.save()
         self.service = ScadaAcquisitionService(override_source="mysql")
 
