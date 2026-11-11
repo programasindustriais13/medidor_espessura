@@ -399,6 +399,7 @@ class SystemConfigurationAdmin(admin.ModelAdmin):
                     "modo_aquisicao",
                     "xid_gatilho",
                     "xid_posicao",
+                    "xid_espessura_plc",
                     "xid_bruto_espessura",
                     "xid_medicao",
                     "tolerancia_temporal_ms",
@@ -410,7 +411,8 @@ class SystemConfigurationAdmin(admin.ModelAdmin):
                 ),
                 "description": (
                     "Configurações do protocolo e comportamento do coletor industrial. "
-                    "O modo 'calibrado' utiliza DP_632601 (bruto) e DP_648291 (posição X) com a calibração multiponto ativa."
+                    "O modo PLC usa D4 (DP_578391) e a posição X (DP_648291). "
+                    "DP_632601 permanece disponível apenas para diagnóstico."
                 ),
             },
         ),

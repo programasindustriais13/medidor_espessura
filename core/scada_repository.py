@@ -153,17 +153,17 @@ class ScadaRepository:
         Retorna: (normalized_value, string_representation)
         """
         if data_type == DATA_TYPE_BINARY:
-            norm_val = bool(point_value == 1.0) if point_value is not None else False
-            str_val = "1" if norm_val else "0"
+            norm_val = bool(point_value == 1.0) if point_value is not None else None
+            str_val = "1" if norm_val else "0" if norm_val is not None else ""
             return norm_val, str_val
 
         elif data_type == DATA_TYPE_MULTISTATE:
-            norm_val = int(point_value) if point_value is not None else 0
-            return norm_val, str(norm_val)
+            norm_val = int(point_value) if point_value is not None else None
+            return norm_val, str(norm_val) if norm_val is not None else ""
 
         elif data_type == DATA_TYPE_NUMERIC:
             if point_value is None:
-                return 0.0, "0"
+                return None, ""
             if hasattr(point_value, "is_integer") and point_value.is_integer():
                 norm_val = int(point_value)
                 return norm_val, str(norm_val)

@@ -741,7 +741,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         // Espessura Calculada (mm)
         if (espAtual.valido && espAtual.espessura_mm !== null && espAtual.espessura_mm !== undefined) {
-            const espFormatted = Number(espAtual.espessura_mm).toFixed(2).replace('.', ',');
+            const espFormatted = Number(espAtual.espessura_mm).toFixed(1).replace('.', ',');
             liveThicknessVal.textContent = `${espFormatted} mm`;
             liveThicknessVal.style.color = '#38bdf8';
 

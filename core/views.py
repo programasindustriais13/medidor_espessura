@@ -7,17 +7,14 @@ from django.db.models import Max
 from .profile_logic import ProfileLogic
 from .dimensional_analysis import DimensionalAnalyzer
 from .scada_service import get_collector_status
-from .calibration_service import CalibrationService
 
 def dashboard(request):
     """
-    Renderiza a interface principal do medidor com diagnóstico da calibração ativa.
+    Renderiza a interface principal do medidor.
     """
     config = SystemConfiguration.get_config()
-    calib = CalibrationService.get_active_calibration()
     return render(request, 'core/dashboard.html', {
         'config': config,
-        'calibracao_ativa': calib,
     })
 
 
@@ -120,7 +117,9 @@ def api_dados_scada(request):
     # Buscar dados ordenados por Data Leitura (para manter ordem cronológica de varredura)
     leituras = LeituraScada.objects.filter(scan_id=scan_id).order_by('data_leitura')
     
-    calib = CalibrationService.get_active_calibration()
+    # Metadados de calibração pertencem somente ao ciclo histórico que os gravou.
+    calib_id = leituras.exclude(calibracao_id__isnull=True).values_list('calibracao_id', flat=True).first()
+    calib = CalibracaoEspessura.objects.filter(pk=calib_id).first() if calib_id else None
     faixa_calib = calib.get_faixa_calibrada() if calib else None
 
     data = []

@@ -99,7 +99,8 @@ class ScadaRepositoryTestCase(TestCase):
         self.assertEqual(sval, "1")
 
         val, sval = self.repo.normalize_value(DATA_TYPE_BINARY, None)
-        self.assertIs(val, False)
+        self.assertIsNone(val)
+        self.assertEqual(sval, "")
 
     def test_normalize_multistate_preserves_zero(self):
         # 0 é estado legítimo (ex: máquina parada ou normal)

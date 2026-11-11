@@ -152,6 +152,7 @@ SCADA_REST_BASE_URL = os.environ.get("SCADA_REST_BASE_URL", "http://192.168.0.20
 SCADA_REST_USERNAME = os.environ.get("SCADA_REST_USERNAME", "teste")
 SCADA_REST_PASSWORD = os.environ.get("SCADA_REST_PASSWORD", "teste1")
 SCADA_XID_GATILHO = os.environ.get("SCADA_XID_GATILHO", "DP_887366")
+SCADA_XID_ESPESSURA_PLC = os.environ.get("SCADA_XID_ESPESSURA_PLC", "DP_578391")
 SCADA_XID_MEDICAO = os.environ.get("SCADA_XID_MEDICAO", "DP_747174")
 SCADA_AUTO_WORKER = os.environ.get("SCADA_AUTO_WORKER", "False").lower() in ("true", "1", "yes")
 

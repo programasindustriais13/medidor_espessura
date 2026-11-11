@@ -222,7 +222,7 @@ class PontoCalibracao(models.Model):
 
 class LeituraScada(models.Model):
     STATUS_VALIDADE_CHOICES = (
-        ("VALIDO", "Válido / Calibrado"),
+        ("VALIDO", "Válido"),
         ("FORA_DA_FAIXA", "Fora da Faixa Calibrada"),
         ("SEM_CALIBRACAO", "Sem Calibração Ativa"),
         ("AMOSTRA_INCOERENTE", "Amostra Incoerente / Desatualizada"),
@@ -310,15 +310,21 @@ class SystemConfiguration(models.Model):
         verbose_name="XID do Valor Bruto de Espessura",
         help_text="Tag com a leitura bruta do sensor de espessura (DP_632601).",
     )
+    xid_espessura_plc = models.CharField(
+        max_length=50,
+        default="DP_578391",
+        verbose_name="XID da Espessura Calculada pelo PLC",
+        help_text="Registrador D4 em décimos de milímetro (DP_578391).",
+    )
     modo_aquisicao = models.CharField(
         max_length=20,
         choices=(
-            ("calibrado", "Dois Pontos Calibrados (DP_632601 + DP_648291)"),
+            ("plc", "Espessura Calculada pelo PLC (D4)"),
             ("legado_json", "Coordenadas Prontas em JSON (DP_747174 - Legado)"),
         ),
-        default="calibrado",
+        default="plc",
         verbose_name="Modo de Aquisição das Coordenadas",
-        help_text="Define se o cálculo de espessura é realizado pelo Django via calibração ativa ou se consome JSON pré-calculado.",
+        help_text="Usa D4 do PLC e a posição X; JSON permanece disponível para consulta legada.",
     )
     tolerancia_temporal_ms = models.IntegerField(
         default=500,
@@ -429,6 +435,8 @@ class SystemConfiguration(models.Model):
 
         if not self.xid_bruto_espessura or not self.xid_bruto_espessura.strip():
             errors["xid_bruto_espessura"] = "O XID do valor bruto de espessura não pode ser vazio."
+        if not self.xid_espessura_plc or not self.xid_espessura_plc.strip():
+            errors["xid_espessura_plc"] = "O XID da espessura calculada pelo PLC não pode ser vazio."
 
         if self.tolerancia_temporal_ms is None or self.tolerancia_temporal_ms <= 0:
             errors["tolerancia_temporal_ms"] = "A tolerância temporal de pareamento deve ser maior que zero."
@@ -498,7 +506,8 @@ class SystemConfiguration(models.Model):
                     "xid_medicao": getattr(settings, "SCADA_XID_MEDICAO", "DP_747174"),
                     "xid_posicao": getattr(settings, "SCADA_XID_POSICAO", "DP_648291"),
                     "xid_bruto_espessura": getattr(settings, "SCADA_XID_BRUTO_ESPESSURA", "DP_632601"),
-                    "modo_aquisicao": "calibrado",
+                    "xid_espessura_plc": getattr(settings, "SCADA_XID_ESPESSURA_PLC", "DP_578391"),
+                    "modo_aquisicao": "plc",
                     "tolerancia_temporal_ms": 500,
                     "aquisicao_ativa": True,
                     "intervalo_consulta": 0.05,
@@ -526,7 +535,8 @@ class SystemConfiguration(models.Model):
                 xid_medicao=getattr(settings, "SCADA_XID_MEDICAO", "DP_747174"),
                 xid_posicao=getattr(settings, "SCADA_XID_POSICAO", "DP_648291"),
                 xid_bruto_espessura=getattr(settings, "SCADA_XID_BRUTO_ESPESSURA", "DP_632601"),
-                modo_aquisicao="calibrado",
+                xid_espessura_plc=getattr(settings, "SCADA_XID_ESPESSURA_PLC", "DP_578391"),
+                modo_aquisicao="plc",
                 tolerancia_temporal_ms=500,
                 aquisicao_ativa=True,
                 intervalo_consulta=0.05,
