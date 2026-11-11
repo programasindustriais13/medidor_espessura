@@ -5,10 +5,12 @@ from datetime import datetime, timedelta
 from django.shortcuts import render
 from django.http import JsonResponse, HttpResponse
 from django.utils import timezone
+from django.core.paginator import Paginator
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
 from .models import LeituraScada, SystemConfiguration, CalibracaoEspessura, ResultadoDimensionalScan
-from django.db.models import Max, Q
+from django.db.models import Max, Count, Q
+from .forms import HistoricoFiltroForm
 from .profile_logic import ProfileLogic
 from .dimensional_analysis import DimensionalAnalyzer
 from .scada_service import get_collector_status
@@ -69,10 +71,58 @@ def dashboard(request):
     })
 
 
+def historico_scans(request):
+    """Consulta paginada de ciclos concluídos, com filtros independentes."""
+    form = HistoricoFiltroForm(request.GET or None)
+    scans = LeituraScada.objects.exclude(scan_id__isnull=True).exclude(scan_id='')
+    collector = get_collector_status()
+    if collector.get('is_scanning') and collector.get('scan_id'):
+        scans = scans.exclude(scan_id=collector['scan_id'])
+    if form.is_valid():
+        filters = form.cleaned_data
+        if filters['material']:
+            names = ResultadoDimensionalScan.objects.filter(
+                nome_material__icontains=filters['material']
+            ).values('scan_id')
+            scans = scans.filter(scan_id__in=names)
+        if filters['ciclo']:
+            scans = scans.filter(scan_id__icontains=filters['ciclo'])
+
+    scans = scans.values('scan_id').annotate(
+        fim=Max('data_leitura'), leituras=Count('id')
+    )
+    if form.is_valid():
+        if filters['inicio']:
+            scans = scans.filter(fim__gte=filters['inicio'])
+        if filters['fim']:
+            scans = scans.filter(fim__lt=filters['fim'] + timedelta(minutes=1))
+    elif request.GET:
+        scans = scans.none()
+
+    page_obj = Paginator(scans.order_by('-fim', '-scan_id'), 25).get_page(request.GET.get('page'))
+    rows = list(page_obj.object_list)
+    summaries = {
+        item.scan_id: item for item in ResultadoDimensionalScan.objects.filter(
+            scan_id__in=[row['scan_id'] for row in rows]
+        )
+    }
+    for row in rows:
+        result = summaries.get(row['scan_id'])
+        row['nome_material'] = result.nome_material if result else ''
+        row['espessura_media_coroa'] = result.espessura_media_coroa if result else None
+    query = request.GET.copy()
+    query.pop('page', None)
+    return render(request, 'core/historico.html', {
+        'form': form,
+        'page_obj': page_obj,
+        'rows': rows,
+        'query_string': query.urlencode(),
+    })
+
+
 def listar_scans(request):
     """
-    Retorna a lista de Scan IDs disponíveis (para o dropdown de histórico).
-    Ordenados do mais recente para o mais antigo.
+    Mantém a API de consulta de ciclos para clientes que já a utilizam.
     """
     query = request.GET.get('q', '').strip()[:150]
     scans = LeituraScada.objects.exclude(scan_id__isnull=True).exclude(scan_id='')

@@ -11,9 +11,6 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
-    <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
     <!-- Custom CSS -->
     {% load static %}
     <link rel="stylesheet" href="{% static 'css/style.css' %}">
@@ -28,7 +25,8 @@
                 <h1>Medidor de <span class="highlight">Espessura</span></h1>
             </div>
             <nav>
-                <a href="{% url 'dashboard' %}" class="active">Dashboard</a>
+                <a href="{% url 'dashboard' %}"{% if request.resolver_match.url_name == 'dashboard' %} class="active"{% endif %}>Dashboard</a>
+                <a href="{% url 'historico_scans' %}"{% if request.resolver_match.url_name == 'historico_scans' %} class="active"{% endif %}>Histórico</a>
                 <a href="{% url 'admin:index' %}">Admin</a>
             </nav>
         </header>

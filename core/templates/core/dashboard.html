@@ -7,19 +7,8 @@
     <div class="page-header">
         <div>
             <h2>Perfil de Espessura</h2>
-            <p class="subtitle" id="scan-status-text">Aguardando início de ciclo...</p>
+            <p class="subtitle" id="scan-status-text">{% if request.GET.scan_id %}Carregando ciclo histórico...{% else %}Aguardando início de ciclo...{% endif %}</p>
             <div class="scan-controls">
-                <div class="scan-search-wrapper">
-                    <div class="scan-search-input-row">
-                        <input id="scan-search" class="input-control" type="search" placeholder="Buscar material, data, hora ou ciclo" aria-label="Buscar no histórico" aria-controls="scan-search-results" autocomplete="off">
-                        <button id="scan-search-submit" class="btn btn-secondary" type="button">Buscar</button>
-                    </div>
-                    <div id="scan-search-results" class="scan-search-results" hidden></div>
-                    <span id="scan-search-status" class="scan-search-status" role="status" aria-live="polite"></span>
-                </div>
-                <select id="scan-select" class="input-control" aria-label="Selecionar ciclo">
-                    <option value="">-- Monitoramento Ao Vivo --</option>
-                </select>
                 <div class="material-control">
                     <label for="material-name">Nome do material</label>
                     <input id="material-name" class="input-control" type="text" maxlength="150" placeholder="Opcional; próximo ciclo se aguardando">
@@ -29,6 +18,8 @@
             </div>
         </div>
         <div class="actions">
+            {% if request.GET.scan_id %}<a href="{% url 'dashboard' %}" class="btn btn-secondary">← Ao vivo</a>{% endif %}
+            <a href="{% url 'historico_scans' %}" class="btn btn-secondary">Consultar histórico</a>
             <a id="export-excel" href="{% url 'exportar_excel' %}" class="btn btn-secondary">
                 <span class="icon">⬇️</span> Exportar Excel
             </a>
@@ -182,5 +173,6 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script src="{% static 'js/dashboard.js' %}?v={% now 'U' %}"></script>
 {% endblock %}

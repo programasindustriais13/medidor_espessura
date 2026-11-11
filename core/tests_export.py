@@ -125,3 +125,60 @@ class MaterialEExportacaoTest(TestCase):
             wb = load_workbook(io.BytesIO(self.client.get('/exportar/excel/', {'scan_id': self.old}).content))
         self.assertEqual(wb['Resumo']['B2'].data_type, 's')
         self.assertEqual(wb['Resumo']['B2'].value, '=1+1')
+
+    def test_tela_historico_lista_ciclos_e_abre_perfil(self):
+        ResultadoDimensionalScan.objects.create(scan_id=self.old, nome_material='Bloco padrão 3 mm')
+        with patch('core.views.get_collector_status', return_value=self.idle):
+            response = self.client.get('/historico/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['page_obj'].paginator.count, 2)
+        self.assertEqual([row['scan_id'] for row in response.context['rows']], [self.current, self.old])
+        self.assertContains(response, 'Bloco padrão 3 mm')
+        self.assertContains(response, f'/?scan_id={self.old}')
+        dashboard = self.client.get('/', {'scan_id': self.old})
+        self.assertContains(dashboard, 'Carregando ciclo histórico')
+        self.assertNotContains(dashboard, 'id="scan-search"')
+
+    def test_filtros_independentes_por_material_ciclo_e_periodo(self):
+        ResultadoDimensionalScan.objects.create(scan_id=self.old, nome_material='Bloco Azul')
+        cases = [
+            ({'material': 'azul'}, [self.old]),
+            ({'ciclo': '120000'}, [self.current]),
+            ({'inicio': '2026-11-11T12:00'}, [self.current]),
+            ({'fim': '2026-11-11T11:57'}, [self.old]),
+            ({'material': 'azul', 'ciclo': '120000'}, []),
+        ]
+        for filters, expected in cases:
+            with self.subTest(filters=filters):
+                with patch('core.views.get_collector_status', return_value=self.idle):
+                    response = self.client.get('/historico/', filters)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual([row['scan_id'] for row in response.context['rows']], expected)
+        invalid = self.client.get('/historico/', {
+            'inicio': '2026-11-11T13:00', 'fim': '2026-11-11T12:00',
+        })
+        self.assertEqual(invalid.context['rows'], [])
+        self.assertContains(invalid, 'A data inicial deve ser anterior')
+        malformed = self.client.get('/historico/', {'inicio': 'data-invalida'})
+        self.assertEqual(malformed.context['rows'], [])
+        self.assertContains(malformed, 'Informe uma data/hora válida')
+
+    def test_historico_oculta_ciclo_ativo_e_pagina_resultados(self):
+        with patch('core.views.get_collector_status', return_value=self.active):
+            response = self.client.get('/historico/')
+        self.assertEqual([row['scan_id'] for row in response.context['rows']], [self.old])
+
+        base = timezone.make_aware(datetime(2026, 11, 10, 10, 0, 0))
+        LeituraScada.objects.bulk_create([
+            LeituraScada(
+                scan_id=f'SCAN_EXTRA_{i:03}', xid='DP_578391', eixo_x=1.0,
+                eixo_y=1.0, data_leitura=base + timedelta(minutes=i),
+            ) for i in range(26)
+        ])
+        with patch('core.views.get_collector_status', return_value=self.idle):
+            response = self.client.get('/historico/', {'page': 2})
+        self.assertEqual(response.context['page_obj'].paginator.count, 28)
+        self.assertEqual(len(response.context['rows']), 3)
+        filtered = self.client.get('/historico/', {'ciclo': 'SCAN_EXTRA_', 'page': 1})
+        self.assertEqual(filtered.context['page_obj'].paginator.count, 26)
+        self.assertContains(filtered, '?page=2&amp;ciclo=SCAN_EXTRA_')

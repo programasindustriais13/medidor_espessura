@@ -1,0 +1,96 @@
+{% extends 'core/base.html' %}
+{% load tz %}
+
+{% block title %}Histórico de medições | Medidor de Espessura{% endblock %}
+
+{% block content %}
+<div class="history-page">
+    <div class="page-header history-header">
+        <div>
+            <h2>Histórico de medições</h2>
+            <p class="subtitle">Consulte os ciclos registrados e abra o perfil que deseja analisar.</p>
+        </div>
+        <a class="btn btn-secondary" href="{% url 'dashboard' %}">← Monitoramento ao vivo</a>
+    </div>
+
+    <form class="card history-filters" method="get" action="{% url 'historico_scans' %}">
+        <h3>Filtrar ciclos</h3>
+        <p class="history-filter-help">O período considera a última leitura de cada ciclo.</p>
+        <div class="history-filter-grid">
+            <div class="history-filter-field">
+                <label for="{{ form.material.id_for_label }}">{{ form.material.label }}</label>
+                {{ form.material }}
+                {% if form.material.errors %}<span class="history-error">{{ form.material.errors|striptags }}</span>{% endif %}
+            </div>
+            <div class="history-filter-field">
+                <label for="{{ form.ciclo.id_for_label }}">{{ form.ciclo.label }}</label>
+                {{ form.ciclo }}
+                {% if form.ciclo.errors %}<span class="history-error">{{ form.ciclo.errors|striptags }}</span>{% endif %}
+            </div>
+            <div class="history-filter-field">
+                <label for="{{ form.inicio.id_for_label }}">Data e hora inicial</label>
+                {{ form.inicio }}
+                {% if form.inicio.errors %}<span class="history-error">{{ form.inicio.errors|striptags }}</span>{% endif %}
+            </div>
+            <div class="history-filter-field">
+                <label for="{{ form.fim.id_for_label }}">Data e hora final</label>
+                {{ form.fim }}
+                {% if form.fim.errors %}<span class="history-error">{{ form.fim.errors|striptags }}</span>{% endif %}
+            </div>
+        </div>
+        {% if form.non_field_errors %}<div class="history-error">{{ form.non_field_errors|striptags }}</div>{% endif %}
+        <div class="history-filter-actions">
+            <button class="btn btn-primary" type="submit">Aplicar filtros</button>
+            <a class="btn btn-secondary" href="{% url 'historico_scans' %}">Limpar</a>
+        </div>
+    </form>
+
+    <section class="card history-results" aria-label="Ciclos encontrados">
+        <div class="history-results-heading">
+            <h3>Ciclos encontrados</h3>
+            <span>{{ page_obj.paginator.count }} resultado{{ page_obj.paginator.count|pluralize }}</span>
+        </div>
+        {% if rows %}
+        <div class="history-table-scroll">
+            <table class="history-table">
+                <thead>
+                    <tr>
+                        <th>Material</th>
+                        <th>Última leitura</th>
+                        <th>ID do ciclo</th>
+                        <th>Leituras</th>
+                        <th>Coroa média</th>
+                        <th>Ações</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in rows %}
+                    <tr>
+                        <td data-label="Material"><strong>{{ row.nome_material|default:'Sem nome' }}</strong></td>
+                        <td data-label="Última leitura">{{ row.fim|localtime|date:'d/m/Y H:i:s' }}</td>
+                        <td data-label="Ciclo"><code>{{ row.scan_id }}</code></td>
+                        <td data-label="Leituras">{{ row.leituras }}</td>
+                        <td data-label="Coroa média">{% if row.espessura_media_coroa is not None %}{{ row.espessura_media_coroa|floatformat:2 }} mm{% else %}—{% endif %}</td>
+                        <td class="history-row-actions" data-label="Ações">
+                            <a href="{% url 'dashboard' %}?scan_id={{ row.scan_id|urlencode }}">Ver perfil</a>
+                            <a href="{% url 'exportar_excel' %}?scan_id={{ row.scan_id|urlencode }}">Excel</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="history-empty">Nenhum ciclo encontrado com esses filtros.</div>
+        {% endif %}
+
+        {% if page_obj.paginator.num_pages > 1 %}
+        <nav class="history-pagination" aria-label="Páginas do histórico">
+            {% if page_obj.has_previous %}<a href="?page={{ page_obj.previous_page_number }}{% if query_string %}&amp;{{ query_string }}{% endif %}">← Anterior</a>{% endif %}
+            <span>Página {{ page_obj.number }} de {{ page_obj.paginator.num_pages }}</span>
+            {% if page_obj.has_next %}<a href="?page={{ page_obj.next_page_number }}{% if query_string %}&amp;{{ query_string }}{% endif %}">Próxima →</a>{% endif %}
+        </nav>
+        {% endif %}
+    </section>
+</div>
+{% endblock %}
