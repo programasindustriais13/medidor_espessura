@@ -443,7 +443,7 @@ class ViewsAndApiTestCase(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp["Content-Type"], "text/csv")
         content = resp.content.decode("utf-8")
-        self.assertIn("Scan ID;X (mm);Y (mm);Status;Zona", content)
+        self.assertIn("Scan ID;Data/Hora;X (mm);Y (mm)", content)
         self.assertIn("SCAN_TEST_VIEW_01", content)
         self.assertIn("10,0", content)  # Vírgula decimal brasileira
 

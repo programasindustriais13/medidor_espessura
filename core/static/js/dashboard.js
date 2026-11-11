@@ -2,20 +2,16 @@ document.addEventListener('DOMContentLoaded', function () {
     const ctx = document.getElementById('profileChart').getContext('2d');
 
     // Elementos de UI do Header
-    const scanSelect = document.createElement('select');
-    scanSelect.className = 'input-control';
-    scanSelect.style.maxWidth = '320px';
-
-    const pageHeaderDiv = document.querySelector('.page-header > div');
-    if (pageHeaderDiv) {
-        pageHeaderDiv.appendChild(document.createElement('br'));
-        pageHeaderDiv.appendChild(scanSelect);
-    }
+    const scanSelect = document.getElementById('scan-select');
+    const scanSearch = document.getElementById('scan-search');
+    const materialName = document.getElementById('material-name');
+    const saveMaterialName = document.getElementById('save-material-name');
+    const materialSaveStatus = document.getElementById('material-save-status');
 
     const statusText = document.getElementById('scan-status-text');
     const scanIdText = document.getElementById('current-scan-id');
     const headerScanIdText = document.getElementById('header-scan-id');
-    const exportBtn = document.querySelector('a[href*="exportar"]');
+    const exportBtn = document.getElementById('export-excel');
 
     // Elementos de Largura / Tamanho do Material
     const widthValElem = document.getElementById('material-width-val');
@@ -58,6 +54,23 @@ document.addEventListener('DOMContentLoaded', function () {
 
     let currentChart = null;
     let selectedScanId = null;
+    let searchTimer = null;
+
+    function csrfToken() {
+        const cookie = document.cookie.split('; ').find(part => part.startsWith('csrftoken='));
+        return cookie ? decodeURIComponent(cookie.split('=').slice(1).join('=')) : '';
+    }
+
+    function updateMaterialField(json) {
+        const target = selectedScanId || (json.is_live_cycle ? json.scan_id : 'pending');
+        const value = target === 'pending' ? json.nome_material_proximo_ciclo : json.nome_material;
+        if (materialName.dataset.target !== target || materialName.dataset.dirty !== 'true') {
+            materialName.value = value || '';
+            materialName.dataset.dirty = 'false';
+        }
+        materialName.dataset.target = target || 'pending';
+        materialName.placeholder = target === 'pending' ? 'Nome para o próximo ciclo' : 'Nome deste ciclo';
+    }
 
     // Função utilitária para desenhar retângulos arredondados no canvas
     function drawRoundedRect(canvasCtx, x, y, width, height, radius) {
@@ -118,18 +131,23 @@ document.addEventListener('DOMContentLoaded', function () {
     // Carregar lista de Scans para o dropdown
     async function loadScanList() {
         try {
-            const res = await fetch('/api/scans/');
+            const query = scanSearch.value.trim();
+            const res = await fetch(`/api/scans/${query ? `?q=${encodeURIComponent(query)}` : ''}`);
             const json = await res.json();
 
             scanSelect.innerHTML = '<option value="">-- Monitoramento Ao Vivo --</option>';
-            if (json.scans && Array.isArray(json.scans)) {
-                json.scans.forEach(sid => {
+            if (json.items && Array.isArray(json.items)) {
+                json.items.forEach(item => {
                     const opt = document.createElement('option');
-                    opt.value = sid;
-                    opt.textContent = sid.replace('SCAN_', '') + ' (Histórico)';
-                    if (sid === selectedScanId) opt.selected = true;
+                    opt.value = item.scan_id;
+                    opt.textContent = `${item.nome_material ? `${item.nome_material} — ` : ''}${item.scan_id.replace('SCAN_', '')} (Histórico)`;
+                    if (item.scan_id === selectedScanId) opt.selected = true;
                     scanSelect.appendChild(opt);
                 });
+            }
+            if (selectedScanId && !Array.from(scanSelect.options).some(opt => opt.value === selectedScanId)) {
+                const opt = new Option(`${selectedScanId.replace('SCAN_', '')} (Selecionado)`, selectedScanId, true, true);
+                scanSelect.appendChild(opt);
             }
         } catch (e) {
             console.error('Erro loading scans', e);
@@ -807,6 +825,12 @@ document.addEventListener('DOMContentLoaded', function () {
 
             const response = await fetch(`/api/dados/?${params.toString()}`);
             const json = await response.json();
+            updateMaterialField(json);
+            if (exportBtn) {
+                exportBtn.href = selectedScanId
+                    ? `/exportar/excel/?scan_id=${encodeURIComponent(selectedScanId)}`
+                    : '/exportar/excel/';
+            }
 
             // Atualiza sempre o indicador permanente de Espessura Atual (independente de varredura ou scan_id)
             updateLiveThicknessUI(json.espessura_atual);
@@ -818,11 +842,6 @@ document.addEventListener('DOMContentLoaded', function () {
                 const displayId = json.scan_id.replace('SCAN_', '');
                 if (scanIdText) scanIdText.textContent = displayId;
                 if (headerScanIdText) headerScanIdText.textContent = displayId;
-
-                if (exportBtn) {
-                    const csvParams = new URLSearchParams(params);
-                    exportBtn.href = `/exportar/csv/?${csvParams.toString()}`;
-                }
 
                 if (statusText) {
                     if (selectedScanId) {
@@ -994,6 +1013,38 @@ document.addEventListener('DOMContentLoaded', function () {
     loadScanList();
     fetchData();
 
+    scanSearch.addEventListener('input', () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(loadScanList, 250);
+    });
+
+    materialName.addEventListener('input', () => {
+        materialName.dataset.dirty = 'true';
+        materialSaveStatus.textContent = '';
+    });
+
+    saveMaterialName.addEventListener('click', async () => {
+        saveMaterialName.disabled = true;
+        materialSaveStatus.textContent = 'Salvando...';
+        try {
+            const response = await fetch('/api/material/', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrfToken()},
+                body: JSON.stringify({scan_id: selectedScanId || null, nome_material: materialName.value}),
+            });
+            const json = await response.json();
+            if (!response.ok) throw new Error(json.erro || 'Não foi possível salvar.');
+            materialSaveStatus.textContent = json.pendente ? 'Preparado para o próximo ciclo.' : 'Nome salvo.';
+            materialName.dataset.target = json.pendente ? 'pending' : json.scan_id;
+            materialName.dataset.dirty = 'false';
+            loadScanList();
+        } catch (error) {
+            materialSaveStatus.textContent = error.message;
+        } finally {
+            saveMaterialName.disabled = false;
+        }
+    });
+
     // Recarregar se mudar parâmetros nominais
     ['logic-esp-borda', 'logic-centro', 'logic-tol'].forEach(id => {
         const elem = document.getElementById(id);
@@ -1003,6 +1054,7 @@ document.addEventListener('DOMContentLoaded', function () {
     // Eventos do Dropdown de Histórico
     scanSelect.addEventListener('change', (e) => {
         selectedScanId = e.target.value;
+        materialSaveStatus.textContent = '';
         currentChart.data.datasets.forEach(d => d.data = []);
         currentChart.update();
         fetchData();

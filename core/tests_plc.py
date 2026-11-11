@@ -144,8 +144,8 @@ class PlcThicknessTestCase(TestCase):
         self.assertIn("30,03", csv_old)
         self.assertIn("20,0", csv_new)
         self.assertIn("10,0", csv_new)
-        self.assertIn("NOK", csv_new)
-        self.assertIn("OK", csv_new)
+        self.assertNotIn(";NOK", csv_new)
+        self.assertNotIn(";OK", csv_new)
 
     def test_rest_pair_uses_d4_without_second_conversion(self):
         self.config.data_source = "rest_api"

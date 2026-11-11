@@ -1,13 +1,34 @@
 import csv
+import json
+import re
 from django.shortcuts import render
 from django.http import JsonResponse, HttpResponse
 from django.utils import timezone
-from .models import LeituraScada, SystemConfiguration, CalibracaoEspessura
-from django.db.models import Max
+from django.views.decorators.csrf import ensure_csrf_cookie
+from django.views.decorators.http import require_http_methods
+from .models import LeituraScada, SystemConfiguration, CalibracaoEspessura, ResultadoDimensionalScan
+from django.db.models import Max, Q
 from .profile_logic import ProfileLogic
 from .dimensional_analysis import DimensionalAnalyzer
 from .scada_service import get_collector_status
 
+
+def _busca_scan(query):
+    """Aceita data/hora no formato exibido ao operador ou no formato do ID."""
+    match = re.fullmatch(r'(\d{2})/(\d{2})/(\d{4})(?:\s+(\d{2}):(\d{2})(?::(\d{2}))?)?', query)
+    if match:
+        day, month, year, hour, minute, second = match.groups()
+        return f'{year}{month}{day}' + (f'_{hour}{minute}{second or ""}' if hour else '')
+    match = re.fullmatch(r'(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?', query)
+    if match:
+        year, month, day, hour, minute, second = match.groups()
+        return f'{year}{month}{day}' + (f'_{hour}{minute}{second or ""}' if hour else '')
+    match = re.fullmatch(r'(\d{2}):(\d{2})(?::(\d{2}))?', query)
+    if match:
+        return ''.join(part for part in match.groups() if part)
+    return query
+
+@ensure_csrf_cookie
 def dashboard(request):
     """
     Renderiza a interface principal do medidor.
@@ -23,10 +44,73 @@ def listar_scans(request):
     Retorna a lista de Scan IDs disponíveis (para o dropdown de histórico).
     Ordenados do mais recente para o mais antigo.
     """
-    scans = LeituraScada.objects.values_list('scan_id', flat=True).distinct().order_by('-scan_id')
-    # Filtra None se houver
-    scans = [s for s in scans if s]
-    return JsonResponse({'scans': scans})
+    query = request.GET.get('q', '').strip()[:150]
+    scans = LeituraScada.objects.exclude(scan_id__isnull=True).exclude(scan_id='')
+    if query:
+        scan_query = _busca_scan(query)
+        matching_names = ResultadoDimensionalScan.objects.filter(
+            nome_material__icontains=query
+        ).values('scan_id')
+        scans = scans.filter(Q(scan_id__icontains=scan_query) | Q(scan_id__in=matching_names))
+    rows = list(scans.values('scan_id').annotate(data_hora=Max('data_leitura')).order_by('-scan_id')[:200])
+    names = dict(ResultadoDimensionalScan.objects.filter(
+        scan_id__in=[row['scan_id'] for row in rows]
+    ).values_list('scan_id', 'nome_material'))
+    items = [{
+        'scan_id': row['scan_id'],
+        'nome_material': names.get(row['scan_id'], ''),
+        'data_hora': timezone.localtime(row['data_hora']).isoformat() if row['data_hora'] else None,
+    } for row in rows]
+    return JsonResponse({'scans': [row['scan_id'] for row in rows], 'items': items})
+
+
+@require_http_methods(['POST'])
+def salvar_nome_material(request):
+    try:
+        payload = json.loads(request.body)
+    except (ValueError, TypeError):
+        return JsonResponse({'erro': 'JSON inválido.'}, status=400)
+    if not isinstance(payload, dict):
+        return JsonResponse({'erro': 'JSON inválido.'}, status=400)
+    nome = payload.get('nome_material', '')
+    if not isinstance(nome, str) or len(nome.strip()) > 150:
+        return JsonResponse({'erro': 'O nome deve ter até 150 caracteres.'}, status=400)
+    nome = nome.strip()
+    scan_id = payload.get('scan_id')
+    if scan_id is not None and not isinstance(scan_id, str):
+        return JsonResponse({'erro': 'Ciclo inválido.'}, status=400)
+    if not scan_id:
+        status = get_collector_status()
+        if status.get('is_scanning') and status.get('scan_id'):
+            scan_id = status['scan_id']
+    if scan_id:
+        status = get_collector_status()
+        is_active = status.get('is_scanning') and scan_id == status.get('scan_id')
+        if not is_active and not LeituraScada.objects.filter(scan_id=scan_id).exists():
+            return JsonResponse({'erro': 'Ciclo não encontrado.'}, status=404)
+        result, _ = ResultadoDimensionalScan.objects.get_or_create(
+            scan_id=scan_id, defaults={'status_leitura': 'EM_ANDAMENTO'}
+        )
+        ResultadoDimensionalScan.objects.filter(pk=result.pk).update(nome_material=nome)
+        return JsonResponse({'scan_id': scan_id, 'nome_material': nome, 'pendente': False})
+    SystemConfiguration.objects.filter(pk=SystemConfiguration.get_config().pk).update(
+        nome_material_proximo_ciclo=nome
+    )
+    return JsonResponse({'scan_id': None, 'nome_material': nome, 'pendente': True})
+
+
+def ciclo_para_exportar(request):
+    """O modo ao vivo sempre usa o último ciclo encerrado com leituras."""
+    requested = request.GET.get('scan_id')
+    status = get_collector_status()
+    if requested:
+        if status.get('is_scanning') and requested == status.get('scan_id'):
+            return None
+        return requested if LeituraScada.objects.filter(scan_id=requested).exists() else None
+    scans = LeituraScada.objects.exclude(scan_id__isnull=True).exclude(scan_id='')
+    if status.get('is_scanning') and status.get('scan_id'):
+        scans = scans.exclude(scan_id=status['scan_id'])
+    return scans.order_by('-scan_id').values_list('scan_id', flat=True).first()
 
 
 def api_dados_scada(request):
@@ -82,6 +166,8 @@ def api_dados_scada(request):
     if not scan_id:
         return JsonResponse({
             'scan_id': None,
+            'nome_material': '',
+            'nome_material_proximo_ciclo': config.nome_material_proximo_ciclo,
             'collector_status': collector_status,
             'is_live_cycle': False,
             'espessura_atual': espessura_atual,
@@ -155,6 +241,8 @@ def api_dados_scada(request):
 
     return JsonResponse({
         'scan_id': scan_id,
+        'nome_material': ResultadoDimensionalScan.objects.filter(scan_id=scan_id).values_list('nome_material', flat=True).first() or '',
+        'nome_material_proximo_ciclo': config.nome_material_proximo_ciclo,
         'collector_status': collector_status,
         'is_live_cycle': is_live_cycle,
         'espessura_atual': espessura_atual,
@@ -177,25 +265,23 @@ def exportar_csv(request):
     Gera relatório CSV ajustado conforme regras industriais.
     Inclui cabeçalho dimensional e dados de calibração metrológica.
     """
-    scan_id = request.GET.get('scan_id')
+    scan_id = ciclo_para_exportar(request)
+    if not scan_id:
+        return HttpResponse('Nenhum ciclo concluído encontrado.', status=404)
     config = SystemConfiguration.get_config()
-    
-    # Parâmetros de Lógica da UI
-    p_esp_borda = request.GET.get('esp_borda')
-    p_centro = request.GET.get('centro')
-    p_tol = request.GET.get('tol')
 
-    if scan_id:
-        leituras = LeituraScada.objects.filter(scan_id=scan_id).order_by('data_leitura')
-        filename = f"relatorio_{scan_id}.csv"
-    else:
-        leituras = LeituraScada.objects.all().order_by('-scan_id', 'data_leitura')
-        filename = f"relatorio_geral_{timezone.now().strftime('%Y%m%d_%H%M')}.csv"
+    leituras = LeituraScada.objects.filter(scan_id=scan_id).order_by('data_leitura')
+    filename = f"relatorio_{scan_id}.csv"
 
     response = HttpResponse(content_type='text/csv')
     response['Content-Disposition'] = f'attachment; filename="{filename}"'
 
     writer = csv.writer(response, delimiter=';')
+    nome = ResultadoDimensionalScan.objects.filter(scan_id=scan_id).values_list('nome_material', flat=True).first() or ''
+    # Impede que um nome fornecido pelo operador seja interpretado como fórmula no Excel.
+    if nome.startswith(('=', '+', '-', '@')):
+        nome = "'" + nome
+    writer.writerow([f'# Material: {nome}'])
 
     if scan_id:
         dim = DimensionalAnalyzer.obter_ou_calcular_dimensoes(scan_id, config=config)
@@ -216,49 +302,31 @@ def exportar_csv(request):
                 writer.writerow([f"# Mediana Lateral Esquerda: {str(dim['mediana_lateral_esq']).replace('.', ',')} mm"])
             if dim.get('mediana_lateral_dir') is not None:
                 writer.writerow([f"# Mediana Lateral Direita: {str(dim['mediana_lateral_dir']).replace('.', ',')} mm"])
-            if dim.get('pontos_suspeitos') is not None:
-                writer.writerow([f"# Leituras Suspeitas Fora das Médias: {dim['pontos_suspeitos']}"])
-                if dim.get('posicoes_suspeitas'):
-                    writer.writerow(["# X Suspeitos (mm): " + ", ".join(
-                        str(x).replace('.', ',') for x in dim['posicoes_suspeitas']
-                    )])
-            writer.writerow([f"# Situacao: {dim.get('status')}"])
             writer.writerow([])
 
     writer.writerow([
         'Scan ID', 
+        'Data/Hora',
         'X (mm)', 
         'Y (mm)', 
-        'Status', 
-        'Zona',
-        'Valor Bruto',
-        'Zero Interp',
-        'Fator Conv',
-        'Validade',
     ])
 
     for l in leituras:
-        res = ProfileLogic.validar_ponto(
-            l.eixo_x, l.eixo_y,
-            esp_borda=p_esp_borda, centro=p_centro, tol=p_tol
-        )
-        status_str = "OK" if res['is_ok'] else "NOK"
         y_str = str(round(l.eixo_y, 3)).replace('.', ',') if l.eixo_y is not None else "N/A"
-        raw_str = str(round(l.valor_bruto, 2)).replace('.', ',') if l.valor_bruto is not None else ""
-        zero_str = str(round(l.zero_interpolado, 2)).replace('.', ',') if l.zero_interpolado is not None else ""
-        fator_str = f"{l.fator_conversao:.8f}".replace('.', ',') if l.fator_conversao is not None else ""
-        val_str = getattr(l, 'status_validade', 'VALIDO')
-        
         writer.writerow([
             l.scan_id,
+            timezone.localtime(l.data_leitura).strftime('%d/%m/%Y %H:%M:%S'),
             str(l.eixo_x).replace('.', ','),
             y_str,
-            status_str,
-            res['zona'],
-            raw_str,
-            zero_str,
-            fator_str,
-            val_str,
         ])
 
     return response
+
+
+def exportar_excel(request):
+    from .excel_export import criar_relatorio_excel
+
+    scan_id = ciclo_para_exportar(request)
+    if not scan_id:
+        return HttpResponse('Nenhum ciclo concluído encontrado.', status=404)
+    return criar_relatorio_excel(scan_id)

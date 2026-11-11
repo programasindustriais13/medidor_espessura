@@ -810,6 +810,8 @@ class ScadaAcquisitionService:
                 )
                 self.is_scanning = True
                 self.current_scan_id = self.generate_scan_id(trigger_dt)
+                from .scan_material import vincular_material_preparado
+                vincular_material_preparado(self.current_scan_id)
                 self.last_valid_x = -999.0
                 self.last_valid_y = -999.0
                 self._seen_points_in_scan.clear()
@@ -832,6 +834,8 @@ class ScadaAcquisitionService:
         elif trigger_active and not self.is_scanning:
             self.is_scanning = True
             self.current_scan_id = self.generate_scan_id(trigger_dt)
+            from .scan_material import vincular_material_preparado
+            vincular_material_preparado(self.current_scan_id)
             self.last_valid_x = -999.0
             self.last_valid_y = -999.0
             self._seen_points_in_scan.clear()

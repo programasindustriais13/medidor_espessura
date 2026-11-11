@@ -336,6 +336,9 @@ class SystemConfiguration(models.Model):
         verbose_name="Aquisição Ativa",
         help_text="Habilita ou pausa temporariamente a coleta de novos dados sem parar o servidor."
     )
+    nome_material_proximo_ciclo = models.CharField(
+        max_length=150, blank=True, default="", verbose_name="Material do Próximo Ciclo"
+    )
     intervalo_consulta = models.FloatField(
         default=0.05,
         verbose_name="Intervalo de Consulta (s)",
@@ -573,6 +576,7 @@ class ResultadoDimensionalScan(models.Model):
     )
 
     scan_id = models.CharField(max_length=50, unique=True, db_index=True, verbose_name="ID do Ciclo")
+    nome_material = models.CharField(max_length=150, blank=True, default="", db_index=True, verbose_name="Nome do Material")
     largura_total = models.FloatField(null=True, blank=True, verbose_name="Largura Total (mm)")
     largura_coroa = models.FloatField(null=True, blank=True, verbose_name="Largura da Coroa (mm)")
     espessura_media_coroa = models.FloatField(null=True, blank=True, verbose_name="Espessura Média da Coroa (mm)")

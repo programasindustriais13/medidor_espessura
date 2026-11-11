@@ -641,7 +641,7 @@ class DimensionalAnalyzer:
 
         if not force_recalc:
             existente = ResultadoDimensionalScan.objects.filter(scan_id=scan_id).first()
-            if existente:
+            if existente and existente.status_leitura != 'EM_ANDAMENTO':
                 return {
                     "status": existente.status_leitura,
                     "motivo": existente.motivo_status,

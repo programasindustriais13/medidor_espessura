@@ -90,6 +90,47 @@ body {
     margin-top: 5px;
 }
 
+.scan-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 10px;
+    margin-top: 14px;
+}
+
+.scan-controls > .input-control {
+    width: min(320px, 100%);
+    font-size: 0.95rem;
+    font-weight: 500;
+}
+
+.material-control {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.material-control label {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.material-control .input-control {
+    width: min(320px, 100%);
+    font-size: 0.95rem;
+    font-weight: 500;
+}
+
+#material-save-status {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+@media (max-width: 700px) {
+    .page-header { align-items: stretch; flex-direction: column; gap: 12px; }
+}
+
 /* Buttons */
 .btn {
     padding: 10px 20px;

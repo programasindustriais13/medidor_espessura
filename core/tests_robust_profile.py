@@ -179,7 +179,7 @@ class RobustProfileTestCase(TestCase):
         csv = self.client.get(f"/exportar/csv/?scan_id={scan_id}").content.decode("utf-8")
         self.assertIn("0,8", csv)
         self.assertIn("# MEDIANA DA COROA", csv)
-        self.assertIn("# X Suspeitos (mm): 126,0", csv)
+        self.assertNotIn("# X Suspeitos", csv)
 
     def test_limites_manuais_nao_sao_encolhidos_pela_analise_do_patamar(self):
         self.config.modo_deteccao_coroa = "manual"

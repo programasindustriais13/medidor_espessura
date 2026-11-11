@@ -8,10 +8,22 @@
         <div>
             <h2>Perfil de Espessura</h2>
             <p class="subtitle" id="scan-status-text">Aguardando início de ciclo...</p>
+            <div class="scan-controls">
+                <input id="scan-search" class="input-control" type="search" placeholder="Buscar material, data ou ciclo" aria-label="Buscar no histórico">
+                <select id="scan-select" class="input-control" aria-label="Selecionar ciclo">
+                    <option value="">-- Monitoramento Ao Vivo --</option>
+                </select>
+                <div class="material-control">
+                    <label for="material-name">Nome do material</label>
+                    <input id="material-name" class="input-control" type="text" maxlength="150" placeholder="Opcional; próximo ciclo se aguardando">
+                    <button id="save-material-name" class="btn btn-secondary" type="button">Salvar nome</button>
+                    <span id="material-save-status" role="status" aria-live="polite"></span>
+                </div>
+            </div>
         </div>
         <div class="actions">
-            <a href="{% url 'exportar_csv' %}" class="btn btn-secondary">
-                <span class="icon">⬇️</span> Histórico CSV
+            <a id="export-excel" href="{% url 'exportar_excel' %}" class="btn btn-secondary">
+                <span class="icon">⬇️</span> Exportar Excel
             </a>
         </div>
     </div>
