@@ -104,8 +104,74 @@ body {
     font-weight: 500;
 }
 
+.scan-search-wrapper {
+    position: relative;
+    width: min(400px, 100%);
+}
+
+.scan-search-input-row {
+    display: flex;
+    gap: 8px;
+}
+
+.scan-search-input-row .input-control {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.95rem;
+    font-weight: 500;
+}
+
+.scan-search-results {
+    position: absolute;
+    z-index: 30;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    max-height: 300px;
+    overflow-y: auto;
+    padding: 6px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--card-bg);
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.35);
+}
+
+.scan-search-results[hidden] { display: none; }
+
+.scan-search-result {
+    display: block;
+    width: 100%;
+    padding: 9px 10px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-primary);
+    text-align: left;
+    cursor: pointer;
+}
+
+.scan-search-result:hover,
+.scan-search-result:focus-visible {
+    background: var(--border-color);
+}
+
+.scan-search-result small {
+    display: block;
+    margin-top: 2px;
+    color: var(--text-secondary);
+}
+
+.scan-search-status {
+    display: block;
+    min-height: 1.2em;
+    margin-top: 3px;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
 .material-control {
     display: flex;
+    flex-basis: 100%;
     flex-wrap: wrap;
     align-items: center;
     gap: 8px;

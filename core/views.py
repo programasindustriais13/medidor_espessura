@@ -1,6 +1,7 @@
 import csv
 import json
 import re
+from datetime import datetime, timedelta
 from django.shortcuts import render
 from django.http import JsonResponse, HttpResponse
 from django.utils import timezone
@@ -28,6 +29,35 @@ def _busca_scan(query):
         return ''.join(part for part in match.groups() if part)
     return query
 
+
+def _filtro_data_leitura(query):
+    """Permite buscar também pela data/hora real das leituras do ciclo."""
+    formats = (
+        ('%d/%m/%Y', timedelta(days=1)),
+        ('%Y-%m-%d', timedelta(days=1)),
+        ('%d/%m/%Y %H:%M', timedelta(minutes=1)),
+        ('%Y-%m-%d %H:%M', timedelta(minutes=1)),
+        ('%Y-%m-%dT%H:%M', timedelta(minutes=1)),
+        ('%d/%m/%Y %H:%M:%S', timedelta(seconds=1)),
+        ('%Y-%m-%d %H:%M:%S', timedelta(seconds=1)),
+        ('%Y-%m-%dT%H:%M:%S', timedelta(seconds=1)),
+    )
+    for format_string, duration in formats:
+        try:
+            start = timezone.make_aware(datetime.strptime(query, format_string))
+        except ValueError:
+            continue
+        return Q(data_leitura__gte=start, data_leitura__lt=start + duration)
+    time_match = re.fullmatch(r'(\d{2}):(\d{2})(?::(\d{2}))?', query)
+    if time_match:
+        hour, minute, second = time_match.groups()
+        if int(hour) < 24 and int(minute) < 60 and (second is None or int(second) < 60):
+            result = Q(data_leitura__hour=int(hour), data_leitura__minute=int(minute))
+            if second is not None:
+                result &= Q(data_leitura__second=int(second))
+            return result
+    return None
+
 @ensure_csrf_cookie
 def dashboard(request):
     """
@@ -51,7 +81,12 @@ def listar_scans(request):
         matching_names = ResultadoDimensionalScan.objects.filter(
             nome_material__icontains=query
         ).values('scan_id')
-        scans = scans.filter(Q(scan_id__icontains=scan_query) | Q(scan_id__in=matching_names))
+        search_filter = Q(scan_id__icontains=scan_query) | Q(scan_id__in=matching_names)
+        date_filter = _filtro_data_leitura(query)
+        if date_filter is not None:
+            search_filter |= date_filter
+        scans = scans.filter(search_filter)
+    total = scans.values('scan_id').distinct().count()
     rows = list(scans.values('scan_id').annotate(data_hora=Max('data_leitura')).order_by('-scan_id')[:200])
     names = dict(ResultadoDimensionalScan.objects.filter(
         scan_id__in=[row['scan_id'] for row in rows]
@@ -61,7 +96,7 @@ def listar_scans(request):
         'nome_material': names.get(row['scan_id'], ''),
         'data_hora': timezone.localtime(row['data_hora']).isoformat() if row['data_hora'] else None,
     } for row in rows]
-    return JsonResponse({'scans': [row['scan_id'] for row in rows], 'items': items})
+    return JsonResponse({'scans': [row['scan_id'] for row in rows], 'items': items, 'total': total})
 
 
 @require_http_methods(['POST'])

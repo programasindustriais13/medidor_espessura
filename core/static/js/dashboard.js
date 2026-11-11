@@ -4,6 +4,10 @@ document.addEventListener('DOMContentLoaded', function () {
     // Elementos de UI do Header
     const scanSelect = document.getElementById('scan-select');
     const scanSearch = document.getElementById('scan-search');
+    const scanSearchSubmit = document.getElementById('scan-search-submit');
+    const scanSearchResults = document.getElementById('scan-search-results');
+    const scanSearchStatus = document.getElementById('scan-search-status');
+    const scanSearchWrapper = document.querySelector('.scan-search-wrapper');
     const materialName = document.getElementById('material-name');
     const saveMaterialName = document.getElementById('save-material-name');
     const materialSaveStatus = document.getElementById('material-save-status');
@@ -55,6 +59,7 @@ document.addEventListener('DOMContentLoaded', function () {
     let currentChart = null;
     let selectedScanId = null;
     let searchTimer = null;
+    let searchRequestId = 0;
 
     function csrfToken() {
         const cookie = document.cookie.split('; ').find(part => part.startsWith('csrftoken='));
@@ -128,29 +133,80 @@ document.addEventListener('DOMContentLoaded', function () {
         c.restore();
     }
 
-    // Carregar lista de Scans para o dropdown
+    function selectScan(scanId) {
+        selectedScanId = scanId;
+        if (scanId && !Array.from(scanSelect.options).some(opt => opt.value === scanId)) {
+            scanSelect.add(new Option(scanId.replace('SCAN_', '') + ' (Histórico)', scanId));
+        }
+        scanSelect.value = scanId;
+        scanSearchResults.hidden = true;
+        materialSaveStatus.textContent = '';
+        currentChart.data.datasets.forEach(d => d.data = []);
+        currentChart.update();
+        fetchData();
+    }
+
+    function showSearchResults(items, total) {
+        scanSearchResults.replaceChildren();
+        if (!items.length) {
+            scanSearchResults.hidden = true;
+            scanSearchStatus.textContent = 'Nenhum ciclo encontrado. Para buscar por material, salve o nome no ciclo.';
+            return;
+        }
+        const limitMessage = total > 20 ? ' Exibindo os primeiros 20; os demais estão no seletor.' : '';
+        scanSearchStatus.textContent = `${total} ciclo${total === 1 ? '' : 's'} encontrado${total === 1 ? '' : 's'}. Clique em um resultado ou pressione Enter.${limitMessage}`;
+        items.slice(0, 20).forEach(item => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'scan-search-result';
+            const title = document.createElement('strong');
+            title.textContent = item.nome_material || 'Material sem nome';
+            const details = document.createElement('small');
+            const date = item.data_hora ? new Date(item.data_hora).toLocaleString('pt-BR') : '';
+            details.textContent = `${date ? date + ' · ' : ''}${item.scan_id}`;
+            button.append(title, details);
+            button.addEventListener('click', () => selectScan(item.scan_id));
+            scanSearchResults.appendChild(button);
+        });
+        scanSearchResults.hidden = false;
+    }
+
+    // Carrega a lista e apresenta resultados clicáveis quando há texto de busca.
     async function loadScanList() {
+        const query = scanSearch.value.trim();
+        const requestId = ++searchRequestId;
+        if (query) scanSearchStatus.textContent = 'Buscando...';
         try {
-            const query = scanSearch.value.trim();
             const res = await fetch(`/api/scans/${query ? `?q=${encodeURIComponent(query)}` : ''}`);
+            if (!res.ok) throw new Error('Falha ao consultar o histórico.');
             const json = await res.json();
+            if (requestId !== searchRequestId || query !== scanSearch.value.trim()) return [];
+            const items = Array.isArray(json.items) ? json.items : [];
 
             scanSelect.innerHTML = '<option value="">-- Monitoramento Ao Vivo --</option>';
-            if (json.items && Array.isArray(json.items)) {
-                json.items.forEach(item => {
-                    const opt = document.createElement('option');
-                    opt.value = item.scan_id;
-                    opt.textContent = `${item.nome_material ? `${item.nome_material} — ` : ''}${item.scan_id.replace('SCAN_', '')} (Histórico)`;
-                    if (item.scan_id === selectedScanId) opt.selected = true;
-                    scanSelect.appendChild(opt);
-                });
-            }
-            if (selectedScanId && !Array.from(scanSelect.options).some(opt => opt.value === selectedScanId)) {
-                const opt = new Option(`${selectedScanId.replace('SCAN_', '')} (Selecionado)`, selectedScanId, true, true);
+            items.forEach(item => {
+                const opt = document.createElement('option');
+                opt.value = item.scan_id;
+                opt.textContent = `${item.nome_material ? `${item.nome_material} — ` : ''}${item.scan_id.replace('SCAN_', '')} (Histórico)`;
                 scanSelect.appendChild(opt);
+            });
+            if (selectedScanId && !Array.from(scanSelect.options).some(opt => opt.value === selectedScanId)) {
+                scanSelect.add(new Option(`${selectedScanId.replace('SCAN_', '')} (Selecionado)`, selectedScanId));
             }
+            scanSelect.value = selectedScanId || '';
+            if (query) showSearchResults(items, json.total ?? items.length);
+            else {
+                scanSearchResults.hidden = true;
+                scanSearchStatus.textContent = '';
+            }
+            return items;
         } catch (e) {
-            console.error('Erro loading scans', e);
+            if (requestId === searchRequestId) {
+                scanSearchResults.hidden = true;
+                scanSearchStatus.textContent = 'Erro ao buscar ciclos. Tente novamente.';
+            }
+            console.error('Erro ao buscar ciclos', e);
+            return [];
         }
     }
 
@@ -1015,7 +1071,40 @@ document.addEventListener('DOMContentLoaded', function () {
 
     scanSearch.addEventListener('input', () => {
         clearTimeout(searchTimer);
+        scanSearchResults.replaceChildren();
+        scanSearchResults.hidden = true;
+        scanSearchStatus.textContent = scanSearch.value.trim() ? 'Buscando...' : '';
         searchTimer = setTimeout(loadScanList, 250);
+    });
+
+    scanSearch.addEventListener('keydown', async (event) => {
+        if (event.key === 'Escape') {
+            scanSearchResults.hidden = true;
+            return;
+        }
+        if (event.key === 'Enter' && scanSearch.value.trim()) {
+            event.preventDefault();
+            clearTimeout(searchTimer);
+            const items = await loadScanList();
+            if (items.length) selectScan(items[0].scan_id);
+        }
+    });
+
+    scanSearchSubmit.addEventListener('click', async () => {
+        clearTimeout(searchTimer);
+        const items = await loadScanList();
+        if (items.length === 1) selectScan(items[0].scan_id);
+        else scanSearch.focus();
+    });
+
+    scanSearch.addEventListener('focus', () => {
+        if (scanSearch.value.trim() && scanSearchResults.childElementCount) {
+            scanSearchResults.hidden = false;
+        }
+    });
+
+    document.addEventListener('click', (event) => {
+        if (!scanSearchWrapper.contains(event.target)) scanSearchResults.hidden = true;
     });
 
     materialName.addEventListener('input', () => {
@@ -1052,19 +1141,13 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     // Eventos do Dropdown de Histórico
-    scanSelect.addEventListener('change', (e) => {
-        selectedScanId = e.target.value;
-        materialSaveStatus.textContent = '';
-        currentChart.data.datasets.forEach(d => d.data = []);
-        currentChart.update();
-        fetchData();
-    });
+    scanSelect.addEventListener('change', (e) => selectScan(e.target.value));
 
     // Polling Automático para Modo "Ao Vivo"
     setInterval(() => {
         if (!selectedScanId) {
             fetchData();
-            if (Math.random() < 0.1) loadScanList();
+            if (!scanSearch.value.trim() && Math.random() < 0.1) loadScanList();
         }
     }, 1000);
 });

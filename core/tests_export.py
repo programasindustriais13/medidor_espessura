@@ -57,8 +57,20 @@ class MaterialEExportacaoTest(TestCase):
             response = self.client.get('/api/scans/', {'q': query})
             self.assertEqual(response.status_code, 200)
             self.assertIn(self.current, response.json()['scans'])
+            self.assertGreaterEqual(response.json()['total'], 1)
         self.assertEqual(self.client.get('/api/scans/', {'q': 'Banda Azul'}).json()['items'][0]['nome_material'], 'Banda Azul')
         self.assertEqual(self.client.get('/api/scans/', {'q': 'Não existe'}).json()['scans'], [])
+
+    def test_busca_pela_data_hora_da_leitura_mesmo_sem_data_no_id(self):
+        reading = LeituraScada.objects.create(
+            scan_id='LOTE_SEM_DATA', xid='DP_578391', eixo_x=1.0, eixo_y=3.0,
+            data_leitura=timezone.make_aware(datetime(2026, 11, 12, 9, 41, 22)),
+        )
+        for query in ('12/11/2026', '2026-11-12 09:41', '09:41:22'):
+            response = self.client.get('/api/scans/', {'q': query})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()['scans'], [reading.scan_id])
+            self.assertEqual(response.json()['total'], 1)
 
     def test_nome_em_historico_sem_resumo_nao_impede_calculo(self):
         with patch('core.views.get_collector_status', return_value=self.idle):

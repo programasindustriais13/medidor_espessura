@@ -9,7 +9,14 @@
             <h2>Perfil de Espessura</h2>
             <p class="subtitle" id="scan-status-text">Aguardando início de ciclo...</p>
             <div class="scan-controls">
-                <input id="scan-search" class="input-control" type="search" placeholder="Buscar material, data ou ciclo" aria-label="Buscar no histórico">
+                <div class="scan-search-wrapper">
+                    <div class="scan-search-input-row">
+                        <input id="scan-search" class="input-control" type="search" placeholder="Buscar material, data, hora ou ciclo" aria-label="Buscar no histórico" aria-controls="scan-search-results" autocomplete="off">
+                        <button id="scan-search-submit" class="btn btn-secondary" type="button">Buscar</button>
+                    </div>
+                    <div id="scan-search-results" class="scan-search-results" hidden></div>
+                    <span id="scan-search-status" class="scan-search-status" role="status" aria-live="polite"></span>
+                </div>
                 <select id="scan-select" class="input-control" aria-label="Selecionar ciclo">
                     <option value="">-- Monitoramento Ao Vivo --</option>
                 </select>
