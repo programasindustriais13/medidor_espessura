@@ -1,5 +1,6 @@
 import logging
 import math
+from statistics import median
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from django.db import transaction
@@ -73,7 +74,7 @@ class DimensionalAnalyzer:
             y_medio = [ integral(y * dx) ] / (x_fim - x_ini)
         Garante que regiões com maior concentração ou adensamento de leituras (amostragem irregular)
         não tenham peso artificialmente inflado em relação a regiões com amostras mais espaçadas.
-        Se os pontos forem uniformemente distribuídos, equivale à média aritmética.
+        Com espaçamento uniforme, os pontos extremos recebem metade do peso dos internos.
         """
         if not pts:
             return 0.0
@@ -95,6 +96,89 @@ class DimensionalAnalyzer:
                 integral += y_medio_degrau * dx
 
         return integral / x_span
+
+    @staticmethod
+    def consolidar_posicoes(pts: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+        """Representa cada posição X pela mediana de suas leituras, sem alterar os registros."""
+        if not pts:
+            return []
+        agrupados = []
+        grupo = [pts[0]]
+        for ponto in sorted(pts, key=lambda p: p[0])[1:]:
+            if abs(ponto[0] - grupo[0][0]) < 0.005:
+                grupo.append(ponto)
+            else:
+                agrupados.append((median(p[0] for p in grupo), median(p[1] for p in grupo)))
+                grupo = [ponto]
+        agrupados.append((median(p[0] for p in grupo), median(p[1] for p in grupo)))
+        return agrupados
+
+    @staticmethod
+    def aparar_rampa(pts: List[Tuple[float, float]], lado: str) -> List[Tuple[float, float]]:
+        """Remove apenas a extremidade que ainda difere do patamar local."""
+        pts = list(pts)
+        if lado in ("esquerda", "ambos"):
+            while len(pts) >= 3 and abs(pts[0][1] - median(p[1] for p in pts[:3])) > 0.15:
+                pts.pop(0)
+        if lado in ("direita", "ambos"):
+            while len(pts) >= 3 and abs(pts[-1][1] - median(p[1] for p in pts[-3:])) > 0.15:
+                pts.pop()
+        return pts
+
+    @staticmethod
+    def separar_picos_isolados(
+        pts: List[Tuple[float, float]], limite_mm: float = 0.3,
+        acordo_vizinhos_mm: float = 0.2,
+    ) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]:
+        """Sinaliza desvios isolados dentro do patamar; mantém transições e dados brutos."""
+        if len(pts) < 5:
+            return list(pts), []
+        espacamentos = [pts[i + 1][0] - pts[i][0] for i in range(len(pts) - 1)]
+        passo = median(dx for dx in espacamentos if dx > 0)
+        aceitos, suspeitos = [], []
+        for i, ponto in enumerate(pts):
+            if i < 2 or i >= len(pts) - 2:
+                aceitos.append(ponto)
+                continue
+            esq = pts[i - 2:i]
+            dir_ = pts[i + 1:i + 3]
+            if (ponto[0] - esq[-1][0] > 2.5 * passo or
+                    dir_[0][0] - ponto[0] > 2.5 * passo):
+                aceitos.append(ponto)
+                continue
+            med_esq = median(p[1] for p in esq)
+            med_dir = median(p[1] for p in dir_)
+            referencia = median([med_esq, med_dir])
+            if (abs(esq[-1][1] - dir_[0][1]) <= acordo_vizinhos_mm + 1e-9 and
+                    abs(med_esq - med_dir) <= acordo_vizinhos_mm + 1e-9 and
+                    abs(ponto[1] - referencia) >= limite_mm - 1e-9):
+                suspeitos.append(ponto)
+            else:
+                aceitos.append(ponto)
+        return aceitos, suspeitos
+
+    @staticmethod
+    def picos_em_posicoes_repetidas(
+        pontos_brutos: List[Tuple[float, float]],
+        posicoes_patamar: List[Tuple[float, float]],
+    ) -> List[Tuple[float, float]]:
+        """Sinaliza uma leitura divergente quando outras na mesma posição concordam."""
+        xs_patamar = [p[0] for p in posicoes_patamar]
+        suspeitos = []
+        ordenados = sorted(pontos_brutos, key=lambda p: p[0])
+        grupo = []
+        for ponto in ordenados + [(float("inf"), 0.0)]:
+            if grupo and abs(ponto[0] - grupo[0][0]) >= 0.005:
+                x = grupo[0][0]
+                if len(grupo) >= 3 and any(abs(x - xp) < 0.005 for xp in xs_patamar):
+                    for indice, (_, y) in enumerate(grupo):
+                        outros = [p[1] for j, p in enumerate(grupo) if j != indice]
+                        if (max(outros) - min(outros) <= 0.2 + 1e-9 and
+                                abs(y - median(outros)) >= 0.3 - 1e-9):
+                            suspeitos.append((x, y))
+                grupo = []
+            grupo.append(ponto)
+        return suspeitos
 
     @classmethod
     def analisar_perfil(
@@ -164,15 +248,25 @@ class DimensionalAnalyzer:
                 "x_fim_coroa": None,
             }
 
-        # 3. Filtrar leituras fora da chapa / retorno do carro em vazio
-        # Desconsidera pontos com Y <= corte_min (ex: carro em vazio no ar ou retorno)
-        valid_coords = [(x, y) for (x, y) in coords_brutas if y >= corte_min]
+        # O corte detecta a extensão da peça; dentro dela aceitamos também a
+        # oscilação natural até 0,2 mm abaixo do corte (ex.: 0,9 mm no bloco de 1 mm).
+        pontos_material = [(x, y) for x, y in coords_brutas if y >= corte_min]
+        if pontos_material:
+            x_material_ini = min(p[0] for p in pontos_material)
+            x_material_fim = max(p[0] for p in pontos_material)
+            piso_interno = max(0.0, corte_min - 0.2)
+            valid_coords = [
+                (x, y) for x, y in coords_brutas
+                if x_material_ini <= x <= x_material_fim and y >= piso_interno - 1e-9
+            ]
+        else:
+            valid_coords = []
 
         if len(valid_coords) < min_pts:
             return {
                 "status": "DADOS_INSUFICIENTES",
                 "motivo": (
-                    f"Quantidade de medições válidas insuficiente ({len(valid_coords)} pts com espessura >= {corte_min:.1f} mm; "
+                    f"Quantidade de medições válidas insuficiente ({len(valid_coords)} pts na extensão da peça; "
                     f"mínimo exigido: {min_pts}). Ciclo potencialmente interrompido ou sensor fora de peça."
                 ),
                 "total_pontos": total_bruto,
@@ -193,17 +287,9 @@ class DimensionalAnalyzer:
                 "x_fim_coroa": None,
             }
 
-        # 4. Ordenar pontos por X e consolidar duplicidades espaciais estritas
-        valid_coords.sort(key=lambda p: p[0])
-
-        clean_pts: List[Tuple[float, float]] = []
-        for x, y in valid_coords:
-            if clean_pts and abs(clean_pts[-1][0] - x) < 0.005:
-                # Média ponderada de espessura para a mesma coordenada X
-                prev_x, prev_y = clean_pts[-1]
-                clean_pts[-1] = (prev_x, (prev_y + y) / 2.0)
-            else:
-                clean_pts.append((x, y))
+        # Uma posição repetida contribui uma vez; a mediana não depende da ordem
+        # em que as leituras chegaram ao Scada.
+        clean_pts = cls.consolidar_posicoes(valid_coords)
 
         xs = [p[0] for p in clean_pts]
         ys = [p[1] for p in clean_pts]
@@ -250,12 +336,13 @@ class DimensionalAnalyzer:
         delta_h = y_peak - y_base
 
         # Verificação do modo manual
-        if (
+        limites_manuais = (
             modo_coroa == "manual"
             and manual_x_ini is not None
             and manual_x_fim is not None
             and manual_x_ini < manual_x_fim
-        ):
+        )
+        if limites_manuais:
             x_inicio_coroa = max(x_esq, float(manual_x_ini))
             x_fim_coroa = min(x_dir, float(manual_x_fim))
         else:
@@ -343,15 +430,18 @@ class DimensionalAnalyzer:
                 "x_fim_coroa": None,
             }
 
-        largura_coroa = x_fim_coroa - x_inicio_coroa
-
         # 6. Selecionar pontos da coroa e calcular ESPESSURA MÉDIA DA COROA (mm)
-        # Importante: utiliza os valores REAIS do eixo Y de todos os pontos no intervalo
-        pts_coroa = [p for p in clean_pts if x_inicio_coroa <= p[0] <= x_fim_coroa]
-        if not pts_coroa:
+        # As extremidades do intervalo detectado podem conter parte da rampa.
+        pts_coroa = cls.aparar_rampa(
+            [p for p in clean_pts if x_inicio_coroa <= p[0] <= x_fim_coroa], "ambos"
+        )
+        if pts_coroa and not limites_manuais:
+            x_inicio_coroa, x_fim_coroa = pts_coroa[0][0], pts_coroa[-1][0]
+        largura_coroa = x_fim_coroa - x_inicio_coroa
+        if len(pts_coroa) < 2:
             return {
                 "status": "SEM_COROA_CLARA",
-                "motivo": "Nenhum ponto registrado no intervalo delimitado para a coroa.",
+                "motivo": "Pontos estáveis insuficientes no intervalo delimitado para a coroa.",
                 "total_pontos": total_bruto,
                 "pontos_validos": len(clean_pts),
                 "largura_total": round(largura_total, 2),
@@ -370,8 +460,10 @@ class DimensionalAnalyzer:
                 "x_fim_coroa": round(x_fim_coroa, 2),
             }
 
-        # Cálculo da média espacial (ponderada pela distância transversal X)
+        pts_coroa, suspeitos_coroa = cls.separar_picos_isolados(pts_coroa)
+        # Média espacial dos pontos aceitos; a mediana registra o nível típico.
         espessura_media_coroa = cls.calcular_media_espacial(pts_coroa)
+        mediana_coroa = median(p[1] for p in pts_coroa)
 
         # Média aritmética e estatísticas auxiliares
         ys_coroa = [p[1] for p in pts_coroa]
@@ -383,8 +475,14 @@ class DimensionalAnalyzer:
         # Limiar de corte para desconsiderar a subida da rampa: Y <= y_base + 0.30 * delta_h
         limiar_lateral = y_base + 0.30 * delta_h
 
-        pts_lat_esq = [p for p in clean_pts if p[0] < x_inicio_coroa and p[1] <= limiar_lateral]
-        pts_lat_dir = [p for p in clean_pts if p[0] > x_fim_coroa and p[1] <= limiar_lateral]
+        pts_lat_esq = cls.aparar_rampa(
+            [p for p in clean_pts if p[0] < x_inicio_coroa and p[1] <= limiar_lateral], "direita"
+        )
+        pts_lat_dir = cls.aparar_rampa(
+            [p for p in clean_pts if p[0] > x_fim_coroa and p[1] <= limiar_lateral], "esquerda"
+        )
+        pts_lat_esq, suspeitos_esq = cls.separar_picos_isolados(pts_lat_esq)
+        pts_lat_dir, suspeitos_dir = cls.separar_picos_isolados(pts_lat_dir)
 
         esp_lat_esq: Optional[float] = None
         if pts_lat_esq:
@@ -393,6 +491,11 @@ class DimensionalAnalyzer:
         esp_lat_dir: Optional[float] = None
         if pts_lat_dir:
             esp_lat_dir = cls.calcular_media_espacial(pts_lat_dir)
+
+        suspeitos = suspeitos_esq + suspeitos_coroa + suspeitos_dir
+        suspeitos += cls.picos_em_posicoes_repetidas(
+            valid_coords, pts_lat_esq + pts_coroa + pts_lat_dir
+        )
 
         # Média geral lateral
         if esp_lat_esq is not None and esp_lat_dir is not None:
@@ -416,6 +519,11 @@ class DimensionalAnalyzer:
             "espessura_min_coroa": round(espessura_min_coroa, 2),
             "espessura_max_coroa": round(espessura_max_coroa, 2),
             "pontos_coroa": len(pts_coroa),
+            "mediana_coroa": round(mediana_coroa, 2),
+            "mediana_lateral_esq": round(median(p[1] for p in pts_lat_esq), 2) if pts_lat_esq else None,
+            "mediana_lateral_dir": round(median(p[1] for p in pts_lat_dir), 2) if pts_lat_dir else None,
+            "pontos_suspeitos": len(suspeitos),
+            "posicoes_suspeitas": sorted({round(p[0], 3) for p in suspeitos}),
             "media_aritmetica_coroa": round(media_aritmetica, 2),
             "espessura_lateral_esq": round(esp_lat_esq, 2) if esp_lat_esq is not None else None,
             "espessura_lateral_dir": round(esp_lat_dir, 2) if esp_lat_dir is not None else None,
@@ -472,6 +580,12 @@ class DimensionalAnalyzer:
                         "corte_min": getattr(config, 'corte_min_espessura_banda', 1.0),
                         "limiar_coroa": getattr(config, 'limiar_coroa_relativo', 0.75),
                         "min_dh": getattr(config, 'min_delta_altura_coroa', 0.8),
+                        "analise_robusta": {
+                            campo: resultado.get(campo) for campo in (
+                                "mediana_coroa", "mediana_lateral_esq", "mediana_lateral_dir",
+                                "pontos_suspeitos", "posicoes_suspeitas",
+                            )
+                        },
                     },
                 }
             )
@@ -521,6 +635,10 @@ class DimensionalAnalyzer:
 
         from .models import ResultadoDimensionalScan
 
+        def metadados_robustos(obj):
+            # Resultados antigos não têm estes metadados e permanecem intactos.
+            return (obj.parametros_calculo or {}).get("analise_robusta", {})
+
         if not force_recalc:
             existente = ResultadoDimensionalScan.objects.filter(scan_id=scan_id).first()
             if existente:
@@ -542,6 +660,7 @@ class DimensionalAnalyzer:
                     "x_direita": existente.x_direita,
                     "x_inicio_coroa": existente.x_inicio_coroa,
                     "x_fim_coroa": existente.x_fim_coroa,
+                    **metadados_robustos(existente),
                 }
 
         # Se não existe em cache ou se forçamos recalculo
@@ -565,6 +684,7 @@ class DimensionalAnalyzer:
                 "x_direita": obj.x_direita,
                 "x_inicio_coroa": obj.x_inicio_coroa,
                 "x_fim_coroa": obj.x_fim_coroa,
+                **metadados_robustos(obj),
             }
 
         return {

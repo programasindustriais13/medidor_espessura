@@ -882,7 +882,7 @@ class BandaDimensionalAnalysisTestCase(TestCase):
         self.assertAlmostEqual(res["largura_coroa"], 9.0, delta=1.0)
         # ESPESSURA MÉDIA DA COROA (mm)
         self.assertAlmostEqual(res["espessura_media_coroa"], 7.00, delta=0.05)
-        self.assertEqual(res["espessura_min_coroa"], 6.80)
+        self.assertEqual(res["espessura_min_coroa"], 7.00)
         self.assertEqual(res["espessura_max_coroa"], 7.00)
         self.assertGreaterEqual(res["pontos_coroa"], 9)
         self.assertAlmostEqual(res["espessura_lateral_esq"], 4.00, delta=0.1)
@@ -891,8 +891,7 @@ class BandaDimensionalAnalysisTestCase(TestCase):
     # ── Cenário 2: Coroa com diferentes espessuras ao longo da largura ─────
     def test_cenario_2_coroa_diferentes_espessuras_e_intervalo_completo(self):
         """
-        Requisito fundamental: verificar que a média da coroa utiliza todo
-        o intervalo válido e não apenas o ponto central ou ponto de crista.
+        A média utiliza o patamar e sinaliza um pico central isolado.
         """
         pts = []
         for x in [0.0, 1.0, 2.0, 3.0, 4.0]:
@@ -922,14 +921,15 @@ class BandaDimensionalAnalysisTestCase(TestCase):
 
         res = DimensionalAnalyzer.analisar_perfil(pts, config=self.config)
         self.assertEqual(res["status"], "CONCLUIDO")
-        # Prova que NÃO utilizou apenas o ponto central (9.5) nem apenas o mínimo (7.0):
+        # O pico isolado de 9,5 mm não deve alterar a média do patamar.
         self.assertNotEqual(res["espessura_media_coroa"], 9.5)
         self.assertNotEqual(res["espessura_media_coroa"], 7.0)
-        # A média real ponderada de todos os 9 pontos fica em torno de ~7.4 mm
+        # A média espacial usa as posições aceitas em todo o patamar.
         self.assertTrue(7.2 <= res["espessura_media_coroa"] <= 8.0)
         self.assertEqual(res["espessura_min_coroa"], 7.1)
-        self.assertEqual(res["espessura_max_coroa"], 9.5)
-        self.assertEqual(res["pontos_coroa"], 7)
+        self.assertEqual(res["espessura_max_coroa"], 7.4)
+        self.assertEqual(res["pontos_suspeitos"], 1)
+        self.assertEqual(res["pontos_coroa"], 6)
 
     # ── Cenário 3: Quantidade desigual de pontos por região ────────────────
     def test_cenario_3_quantidade_desigual_de_pontos_por_regiao(self):

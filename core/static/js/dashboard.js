@@ -640,22 +640,33 @@ document.addEventListener('DOMContentLoaded', function () {
 
             if (dimEspMediaCoroa) dimEspMediaCoroa.textContent = `${dim.espessura_media_coroa.toFixed(2)} mm`;
             if (dimEspMediaCoroaSub) {
-                dimEspMediaCoroaSub.textContent = `Mín: ${dim.espessura_min_coroa.toFixed(2)} mm | Máx: ${dim.espessura_max_coroa.toFixed(2)} mm | ${dim.pontos_coroa} pts (Média Integral)`;
+                const mediana = dim.mediana_coroa !== null && dim.mediana_coroa !== undefined
+                    ? `Mediana: ${dim.mediana_coroa.toFixed(2)} mm | ` : '';
+                dimEspMediaCoroaSub.textContent = `${mediana}Mín: ${dim.espessura_min_coroa.toFixed(2)} mm | Máx: ${dim.espessura_max_coroa.toFixed(2)} mm | ${dim.pontos_coroa} posições`;
             }
 
             if (dimEspLateralMedia) {
-                const latMed = dim.espessura_lateral_media !== null ? `${dim.espessura_lateral_media.toFixed(2)} mm` : '-- mm';
-                dimEspLateralMedia.textContent = latMed;
+                const esq = dim.espessura_lateral_esq !== null ? dim.espessura_lateral_esq.toFixed(2) : '--';
+                const dir = dim.espessura_lateral_dir !== null ? dim.espessura_lateral_dir.toFixed(2) : '--';
+                dimEspLateralMedia.textContent = `${esq} / ${dir} mm`;
             }
             if (dimEspLateralSub) {
                 const esq = dim.espessura_lateral_esq !== null ? `${dim.espessura_lateral_esq.toFixed(2)} mm` : 'Não detectada';
                 const dir = dim.espessura_lateral_dir !== null ? `${dim.espessura_lateral_dir.toFixed(2)} mm` : 'Não detectada';
-                dimEspLateralSub.textContent = `Esq: ${esq} | Dir: ${dir}`;
+                const medEsq = dim.mediana_lateral_esq !== null && dim.mediana_lateral_esq !== undefined
+                    ? ` (med. ${dim.mediana_lateral_esq.toFixed(2)})` : '';
+                const medDir = dim.mediana_lateral_dir !== null && dim.mediana_lateral_dir !== undefined
+                    ? ` (med. ${dim.mediana_lateral_dir.toFixed(2)})` : '';
+                dimEspLateralSub.textContent = `Esq: ${esq}${medEsq} | Dir: ${dir}${medDir}`;
             }
 
             if (dimMotivoBox) {
                 dimMotivoBox.style.display = 'block';
-                dimMotivoBox.textContent = `Varredura concluída com ${dim.total_pontos} medições físicas. Patamar da coroa validado com ${dim.pontos_coroa} pontos úteis sem rampas.`;
+                const locais = Array.isArray(dim.posicoes_suspeitas) && dim.posicoes_suspeitas.length
+                    ? ` em X=${dim.posicoes_suspeitas.slice(0, 5).join(', ')} mm` : '';
+                const suspeitos = dim.pontos_suspeitos !== null && dim.pontos_suspeitos !== undefined
+                    ? ` ${dim.pontos_suspeitos} leitura(s) suspeita(s)${locais} fora das médias; leituras brutas preservadas.` : '';
+                dimMotivoBox.textContent = `Varredura concluída com ${dim.total_pontos} medições físicas. Coroa calculada com ${dim.pontos_coroa} posições do patamar.${suspeitos}`;
             }
         } else {
             const cores = {

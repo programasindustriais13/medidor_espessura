@@ -205,11 +205,23 @@ def exportar_csv(request):
             writer.writerow([f"# Largura Total: {str(dim.get('largura_total')).replace('.', ',')} mm"])
             writer.writerow([f"# Largura Coroa: {str(dim.get('largura_coroa')).replace('.', ',')} mm"])
             writer.writerow([f"# ESPESSURA MEDIA DA COROA: {str(dim.get('espessura_media_coroa')).replace('.', ',')} mm"])
+            if dim.get('mediana_coroa') is not None:
+                writer.writerow([f"# MEDIANA DA COROA: {str(dim['mediana_coroa']).replace('.', ',')} mm"])
             writer.writerow([f"# Espessura Min Coroa: {str(dim.get('espessura_min_coroa')).replace('.', ',')} mm"])
             writer.writerow([f"# Espessura Max Coroa: {str(dim.get('espessura_max_coroa')).replace('.', ',')} mm"])
             writer.writerow([f"# Pontos Validos Coroa: {dim.get('pontos_coroa', 0)}"])
             writer.writerow([f"# Espessura Lateral Esquerda: {str(dim.get('espessura_lateral_esq')).replace('.', ',')} mm"])
             writer.writerow([f"# Espessura Lateral Direita: {str(dim.get('espessura_lateral_dir')).replace('.', ',')} mm"])
+            if dim.get('mediana_lateral_esq') is not None:
+                writer.writerow([f"# Mediana Lateral Esquerda: {str(dim['mediana_lateral_esq']).replace('.', ',')} mm"])
+            if dim.get('mediana_lateral_dir') is not None:
+                writer.writerow([f"# Mediana Lateral Direita: {str(dim['mediana_lateral_dir']).replace('.', ',')} mm"])
+            if dim.get('pontos_suspeitos') is not None:
+                writer.writerow([f"# Leituras Suspeitas Fora das Médias: {dim['pontos_suspeitos']}"])
+                if dim.get('posicoes_suspeitas'):
+                    writer.writerow(["# X Suspeitos (mm): " + ", ".join(
+                        str(x).replace('.', ',') for x in dim['posicoes_suspeitas']
+                    )])
             writer.writerow([f"# Situacao: {dim.get('status')}"])
             writer.writerow([])
 
