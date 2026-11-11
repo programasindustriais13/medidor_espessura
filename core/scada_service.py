@@ -373,7 +373,7 @@ class ScadaAcquisitionService:
         config: Optional[SystemConfiguration] = None,
         is_scanning: bool = False,
     ) -> Dict[str, Any]:
-        """Converte D4 uma única vez. A leitura atual independe do gatilho e de X."""
+        """Valida a espessura em mm recebida do Scada, sem aplicar nova escala."""
         now_ms = int(time.time() * 1000)
         result = {
             "valido": False, "espessura_mm": None, "posicao_x": pos_x,
@@ -393,7 +393,7 @@ class ScadaAcquisitionService:
         except (TypeError, ValueError):
             result.update(status="ERRO_LEITURA", motivo="D4 inválido.")
             return result
-        result.update(valido=True, espessura_mm=numeric / 10.0,
+        result.update(valido=True, espessura_mm=numeric,
                       status="VALIDO", motivo="Leitura do PLC válida.")
         return result
 

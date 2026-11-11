@@ -314,7 +314,7 @@ class SystemConfiguration(models.Model):
         max_length=50,
         default="DP_578391",
         verbose_name="XID da Espessura Calculada pelo PLC",
-        help_text="Registrador D4 em décimos de milímetro (DP_578391).",
+        help_text="Espessura em milímetros entregue pelo Scada-LTS (DP_578391).",
     )
     modo_aquisicao = models.CharField(
         max_length=20,
